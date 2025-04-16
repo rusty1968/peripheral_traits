@@ -1,8 +1,0 @@
-[package]
-name = "adapters"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-embedded-hal.workspace = true
-#tock = { git = "https://github.com/tock/tock.git", branch = "master" }
