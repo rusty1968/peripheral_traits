@@ -1,5 +1,5 @@
 use core::fmt::Debug;
-use crate::OutputSize;
+use crate::serde::OutputSize;
 /// Error kind.
 ///
 /// This represents a common set of digest operation errors. Implementations are

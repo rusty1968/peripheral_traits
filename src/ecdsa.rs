@@ -1,7 +1,5 @@
 use core::fmt::Debug;
-
-use crate::OutputSize;
-
+use rand_core::{CryptoRng, RngCore};
 
 pub trait Error: core::fmt::Debug {
     /// Convert error to a generic error kind
@@ -34,10 +32,10 @@ pub enum ErrorKind {
 
 
 pub trait EcdsaTypes {
-    type PrivateKey : crate::Serde;
-    type PublicKey : crate::Serde;
-    type Message : OutputSize + crate::Serde;
-    type Signature : crate::Serde;
+    type PrivateKey<'a>;
+    type PublicKey;
+    type Message;
+    type Signature;
     type Curve;
 }
 
@@ -56,7 +54,7 @@ pub trait EcdsaKeyGen: ErrorType + EcdsaTypes {
     /// A result containing the generated private and public keys, or an error.    
     fn generate_key_pair(
         curve: &Self::Curve,
-    ) -> Result<(Self::PrivateKey, Self::PublicKey), Self::Error>;
+    ) -> Result<(Self::PrivateKey<'_>, Self::PublicKey), Self::Error>;
 }
 
 /// Trait for ECDSA signing.
@@ -73,10 +71,11 @@ pub trait EcdsaSign: ErrorType + EcdsaTypes{
     ///
     /// # Returns
     /// A result containing the generated signature, or an error.    
-    fn sign(
+    fn sign<R: RngCore + CryptoRng> (
         curve: &Self::Curve,
-        private_key: &Self::PrivateKey,
+        private_key: &Self::PrivateKey<'_>,
         message: Self::Message,
+        rng : &mut R
     ) -> Result<Self::Signature, Self::Error>;
 }
 

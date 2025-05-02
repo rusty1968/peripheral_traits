@@ -1,7 +1,7 @@
 
 // common.rs
 
-pub trait Error: core::fmt::Debug {
+pub trait SerdeError: core::fmt::Debug {
     /// Convert error to a generic error kind
     ///
     /// By using this method, errors freely defined by HAL implementations
@@ -12,7 +12,7 @@ pub trait Error: core::fmt::Debug {
 
 pub trait ErrorType {
     /// Error type.
-    type Error: Error;
+    type Error: SerdeError;
 }
 
 /// Error kind.
@@ -24,6 +24,7 @@ pub trait ErrorType {
 #[non_exhaustive]
 pub enum ErrorKind {
     NotSupported,
+    SourceBufferTooSmall,
 }    
 
 
