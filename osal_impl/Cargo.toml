@@ -1,0 +1,9 @@
+[package]
+name = "osal_impl"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+osal = { path = "../osal" }
+nix = { version = "0.30.1", features = ["mqueue", "poll"] }
+zerocopy = { version = "0.8.17", features = ["derive"] }
