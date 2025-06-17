@@ -43,9 +43,8 @@ pub trait RsaKeys {
 }
 
 pub trait RsaSignature {
-    type Signature : ToBytes + FromBytes;
+    type Signature: ToBytes + FromBytes;
 }
-
 
 pub trait RsaMessage {
     /// Type representing the message to be signed.
@@ -65,14 +64,12 @@ pub trait RsaMessage {
     type Message: ToBytes + FromBytes;
 }
 
-
 pub trait RsaKeyGen: ErrorType + RsaKeys {
     fn generate_keys(bits: RsaSize) -> Result<(Self::PrivateKey, Self::PublicKey), Self::Error>;
 }
 
 /// Trait for RSA signing operations.
-pub trait RsaSign: ErrorType + RsaKeys + RsaSignature + RsaMessage{
-
+pub trait RsaSign: ErrorType + RsaKeys + RsaSignature + RsaMessage {
     /// Signs a message using the given private key and padding mode.
     ///
     /// # Arguments
@@ -93,7 +90,7 @@ pub trait RsaSign: ErrorType + RsaKeys + RsaSignature + RsaMessage{
 }
 
 /// Trait for RSA signature verification.
-pub trait RsaVerify: ErrorType + RsaKeys + RsaSignature + RsaMessage{
+pub trait RsaVerify: ErrorType + RsaKeys + RsaSignature + RsaMessage {
     /// Verifies a signature against a message and public key.
     ///
     /// # Arguments

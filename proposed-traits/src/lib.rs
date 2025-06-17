@@ -14,6 +14,6 @@ pub mod i3c_target;
 pub mod system_control;
 
 pub mod client;
-pub mod service;
 pub mod otp;
+pub mod service;
 pub mod symm_cipher;

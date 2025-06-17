@@ -1,5 +1,8 @@
+use crate::{
+    common::{FromBytes, ToBytes},
+    digest::DigestAlgorithm,
+};
 use core::fmt::Debug;
-use crate::digest::DigestAlgorithm;
 
 pub trait Error: core::fmt::Debug {
     /// Convert error to a generic error kind
@@ -36,57 +39,105 @@ pub enum ErrorKind {
     Other,
 }
 
+pub trait EccPrivateKey<'a>: ToBytes + FromBytes {
+    /// Optional method to securely zero the key material.
+    fn zeroize(&mut self);
+}
+
+/// A trait representing an abstract elliptic curve with associated types for cryptographic operations.
+///
+/// This trait defines the core components required for elliptic curve cryptography (ECC),
+/// including the digest algorithm used for hashing, the scalar field element type, and the
+/// point representation on the curve.
+///
+/// # Associated Types
+///
+/// - `DigestType`: A type implementing the `DigestAlgorithm` trait, used for cryptographic hashing.
+/// - `Scalar`: The scalar field element type, typically used in scalar multiplication.
+/// - `Point`: The type representing a point on the elliptic curve.
+///
+/// # Example
+///
+/// ```ignore
+/// struct MyCurve;
+///
+/// impl Curve for MyCurve {
+///     type DigestType = Sha256;
+///     type Scalar = MyScalar;
+/// }
+/// ```
+///
+/// This trait is intended to be implemented by specific elliptic curve types to provide
+/// a unified interface for cryptographic operations.
 pub trait Curve {
-    type DigestType: DigestAlgorithm;
+    type DigestType: DigestAlgorithm + AsRef<u8>;
+    type Scalar: ToBytes + FromBytes;
+}
+
+pub trait PrivateKeyForCurve<C: Curve> {
+    fn zeroize(&mut self);
+}
+
+pub trait SignatureForCurve<C: Curve>: ToBytes + FromBytes {
+    fn r(&self) -> &C::Scalar;
+    fn s(&self) -> &C::Scalar;
+    fn new(r: C::Scalar, s: C::Scalar) -> Self;
+}
+
+/// A trait representing a public key associated with a specific elliptic curve.
+pub trait PubKeyForCurve<C: Curve>: ToBytes + FromBytes {
+    fn x(&self) -> &C::Scalar;
+    fn y(&self) -> &C::Scalar;
+
+    fn new(x: C::Scalar, y: C::Scalar) -> Self;
 }
 
 /// Trait for ECDSA key generation over a specific elliptic curve.
-pub trait EcdsaKeyGen: ErrorType {
-    type PrivateKey<'a>;
-    type PublicKey<'a>;
-
-    fn generate_key_pair<R: rand_core::RngCore + rand_core::CryptoRng>(
+pub trait EcdsaKeyGen<C: Curve>: ErrorType {
+    fn generate_key_pair<PK, PUB, R>(
         &mut self,
         rng: R,
-        priv_key: &mut Self::PrivateKey<'_>,
-        pub_key: &mut Self::PublicKey<'_>,
-    ) -> Result<(), Self::Error>;
+        priv_key: &mut PK,
+        pub_key: &mut PUB,
+    ) -> Result<(), Self::Error>
+    where
+        PK: PrivateKeyForCurve<C>,
+        PUB: PubKeyForCurve<C>,
+        R: rand_core::RngCore + rand_core::CryptoRng;
 }
 
 /// Trait for ECDSA signing using a digest algorithm.
 pub trait EcdsaSign<C: Curve>: ErrorType {
-    type PrivateKey<'a>;
-    type Signature;
-
     /// Signs a digest produced by a compatible hash function.
     ///
     /// # Parameters
     /// - `private_key`: The private key used for signing.
     /// - `digest`: The digest output from a hash function.
     /// - `rng`: A cryptographically secure random number generator.
-    fn sign<R: rand_core::RngCore + rand_core::CryptoRng>(
+    fn sign<PK, R, S>(
         &mut self,
-        private_key: &Self::PrivateKey<'_>,
+        private_key: &PK,
         digest: <<C as Curve>::DigestType as DigestAlgorithm>::DigestOutput,
         rng: R,
-    ) -> Result<Self::Signature, Self::Error>;
+    ) -> Result<S, Self::Error>
+    where
+        PK: PrivateKeyForCurve<C>,
+        R: rand_core::RngCore + rand_core::CryptoRng,
+        S: SignatureForCurve<C>;
 }
 
 /// Trait for ECDSA signature verification using a digest algorithm.
 pub trait EcdsaVerify<C: Curve>: ErrorType {
-    type PublicKey;
-    type Signature;
-
     /// Verifies a signature against a digest.
     ///
     /// # Parameters
     /// - `public_key`: The public key used for verification.
     /// - `digest`: The digest output from a hash function.
     /// - `signature`: The signature to verify.
-    fn verify(
+    fn verify<P: PubKeyForCurve<C>, S: SignatureForCurve<C>>(
         &mut self,
-        public_key: &Self::PublicKey,
+        public_key: &P,
         digest: <<C as Curve>::DigestType as DigestAlgorithm>::DigestOutput,
-        signature: &Self::Signature,
+        signature: &S,
     ) -> Result<(), Self::Error>;
 }

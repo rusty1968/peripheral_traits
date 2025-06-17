@@ -3,10 +3,6 @@ use simulation::SimulatedPac;
 
 use drivers::spi_device_driver::SpiDeviceDriver;
 
-use simulation::i3c::DummyI3cController;
-
-
-mod ecdsa;
 
 pub fn main() {
     let pac = SimulatedPac::new();

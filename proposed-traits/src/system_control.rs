@@ -135,8 +135,11 @@ pub trait ClockControl: Send + Sync + ErrorType {
     /// # Returns
     ///
     /// * `Result<(), Self::Error>` - Ok if the operation is successful, or an error of type `Self::Error`.
-    fn set_frequency(&mut self, clock_id: &Self::ClockId, frequency_hz: u64)
-        -> Result<(), Self::Error>;
+    fn set_frequency(
+        &mut self,
+        clock_id: &Self::ClockId,
+        frequency_hz: u64,
+    ) -> Result<(), Self::Error>;
 
     /// Gets the current frequency of a clock (in Hz).
     ///
@@ -216,7 +219,11 @@ pub trait ResetControl: Send + Sync + ErrorType {
     /// # Returns
     ///
     /// * `Result<(), Self::Error>` - Ok if the operation is successful, or an error of type `Self::Error`.
-    fn reset_pulse(&mut self, reset_id: &Self::ResetId, duration: Duration) -> Result<(), Self::Error>;
+    fn reset_pulse(
+        &mut self,
+        reset_id: &Self::ResetId,
+        duration: Duration,
+    ) -> Result<(), Self::Error>;
 
     /// Checks if the reset signal is currently asserted for the specified reset ID.
     ///

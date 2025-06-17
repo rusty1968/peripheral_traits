@@ -24,6 +24,8 @@ pub trait ErrorType {
 pub enum ErrorKind {
     NotSupported,
     SourceBufferTooSmall,
+    DestinationBufferTooSmall,
+    Other,
 }
 
 /// Endianness selector

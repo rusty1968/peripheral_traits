@@ -47,7 +47,6 @@ pub trait ErrorType {
     type Error: Error;
 }
 
-
 /// A generic trait representing a One-Time Programmable (OTP) memory interface.
 ///
 /// This trait abstracts the basic operations for interacting with OTP memory,
@@ -65,7 +64,7 @@ pub trait ErrorType {
 ///
 /// All methods return a `Result` to handle potential errors such as invalid
 /// addresses or attempts to write to locked memory.
-pub trait OtpMemory<T> : ErrorType + Send + Sync
+pub trait OtpMemory<T>: ErrorType + Send + Sync
 where
     T: Copy + Default,
 {

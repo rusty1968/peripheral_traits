@@ -1,5 +1,4 @@
-
-use crate::common::{FromBytes , ToBytes};
+use crate::common::{FromBytes, ToBytes};
 use core::fmt::Debug;
 
 /// Marker trait for all cipher modes.
@@ -13,7 +12,6 @@ pub trait AeadCipherMode: CipherMode {}
 
 /// Marker trait for stream cipher modes (e.g., ChaCha20).
 pub trait StreamCipherMode: CipherMode {}
-
 
 /// Common error kinds for symmetric cipher operations.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
