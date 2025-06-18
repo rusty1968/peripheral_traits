@@ -94,50 +94,69 @@ pub trait PubKeyForCurve<C: Curve>: ToBytes + FromBytes {
 
 /// Trait for ECDSA key generation over a specific elliptic curve.
 pub trait EcdsaKeyGen<C: Curve>: ErrorType {
-    fn generate_key_pair<PK, PUB, R>(
+    /// The type representing the private key for the curve.
+    type PrivateKey: PrivateKeyForCurve<C>;
+
+    /// The type representing the public key for the curve.
+    type PublicKey: PubKeyForCurve<C>;
+
+    /// Generates an ECDSA key pair.
+    ///
+    /// # Parameters
+    /// - `rng`: A cryptographically secure random number generator.
+    ///
+    /// # Returns
+    /// A tuple containing the generated private key and public key.
+    fn generate_key_pair<R>(
         &mut self,
-        rng: R,
-        priv_key: &mut PK,
-        pub_key: &mut PUB,
-    ) -> Result<(), Self::Error>
+        rng: &mut R,
+    ) -> Result<(Self::PrivateKey, Self::PublicKey), Self::Error>
     where
-        PK: PrivateKeyForCurve<C>,
-        PUB: PubKeyForCurve<C>,
         R: rand_core::RngCore + rand_core::CryptoRng;
 }
 
 /// Trait for ECDSA signing using a digest algorithm.
 pub trait EcdsaSign<C: Curve>: ErrorType {
+    /// The type representing the private key for the curve.
+    type PrivateKey: PrivateKeyForCurve<C>;
+
+    /// The type representing the signature for the curve.
+    type Signature: SignatureForCurve<C>;
+
     /// Signs a digest produced by a compatible hash function.
     ///
     /// # Parameters
     /// - `private_key`: The private key used for signing.
     /// - `digest`: The digest output from a hash function.
     /// - `rng`: A cryptographically secure random number generator.
-    fn sign<PK, R, S>(
+    fn sign<R>(
         &mut self,
-        private_key: &PK,
+        private_key: &Self::PrivateKey,
         digest: <<C as Curve>::DigestType as DigestAlgorithm>::DigestOutput,
-        rng: R,
-    ) -> Result<S, Self::Error>
+        rng: &mut R,
+    ) -> Result<Self::Signature, Self::Error>
     where
-        PK: PrivateKeyForCurve<C>,
-        R: rand_core::RngCore + rand_core::CryptoRng,
-        S: SignatureForCurve<C>;
+        R: rand_core::RngCore + rand_core::CryptoRng;
 }
 
 /// Trait for ECDSA signature verification using a digest algorithm.
 pub trait EcdsaVerify<C: Curve>: ErrorType {
+    /// The type representing the public key for the curve.
+    type PublicKey: PubKeyForCurve<C>;
+
+    /// The type representing the signature for the curve.
+    type Signature: SignatureForCurve<C>;
+
     /// Verifies a signature against a digest.
     ///
     /// # Parameters
     /// - `public_key`: The public key used for verification.
     /// - `digest`: The digest output from a hash function.
     /// - `signature`: The signature to verify.
-    fn verify<P: PubKeyForCurve<C>, S: SignatureForCurve<C>>(
+    fn verify(
         &mut self,
-        public_key: &P,
+        public_key: &Self::PublicKey,
         digest: <<C as Curve>::DigestType as DigestAlgorithm>::DigestOutput,
-        signature: &S,
+        signature: &Self::Signature,
     ) -> Result<(), Self::Error>;
 }
