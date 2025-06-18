@@ -52,7 +52,7 @@ pub trait DigestAlgorithm {
     const OUTPUT_BITS: usize;
 
     /// The type representing the digest output.
-    type DigestOutput;
+    type DigestOutput: AsRef<[u8]>;
 }
 
 /// Trait for initializing a digest operation for a specific algorithm.

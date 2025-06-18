@@ -70,7 +70,7 @@ pub trait EccPrivateKey<'a>: ToBytes + FromBytes {
 /// This trait is intended to be implemented by specific elliptic curve types to provide
 /// a unified interface for cryptographic operations.
 pub trait Curve {
-    type DigestType: DigestAlgorithm + AsRef<u8>;
+    type DigestType: DigestAlgorithm;
     type Scalar: ToBytes + FromBytes;
 }
 

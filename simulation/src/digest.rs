@@ -16,6 +16,13 @@ pub struct DigestOutput256 {
     pub data: [u8; 32],
 }
 
+
+impl AsRef<[u8]> for DigestOutput256 {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
+    }
+}
+
 /// Dummy hardware controller.
 struct Inner;
 
