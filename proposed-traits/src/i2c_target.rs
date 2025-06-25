@@ -14,7 +14,7 @@ use embedded_hal::i2c::ErrorType as I2CErrorType;
 /// making it suitable for use in generic drivers or frameworks that require full I2C functionality.
 ///
 /// # Example
-/// ```rust
+/// ```rust,ignore
 /// struct MyDevice { /* ... */ }
 ///
 /// impl I2CCoreTarget for MyDevice { /* ... */ }
@@ -77,7 +77,7 @@ pub trait I2CCoreTarget: I2CErrorType {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// fn on_transaction_start(&mut self, repeated: bool) {
     ///     if repeated {
     ///         // Continue using previous state
@@ -152,7 +152,7 @@ pub trait WriteReadTarget: WriteTarget + ReadTarget {
     /// This function returns an error if the write or read operation fails.
     ///
     /// # Example
-    /// ```
+    /// ```ignore
     /// device.on_write_read(&mut [0x01, 0x02], &mut [0; 4])?;
     /// ```
     fn on_write_read(

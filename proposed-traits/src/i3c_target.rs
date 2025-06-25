@@ -33,7 +33,7 @@ pub trait I3CCoreTarget: I2CCoreTarget {}
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// fn on_dynamic_address_assigned(&mut self, new_address: u8) {
 ///     self.dynamic_address = Some(new_address);
 ///     self.enable_i3c_features();

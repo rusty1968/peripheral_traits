@@ -13,3 +13,7 @@ embedded-io = "0.6.1"
 [[example]]
 name = "otp_aspeed"
 path = "examples/otp_aspeed.rs"
+
+[[example]]
+name = "spdm_hash_negotiation"
+path = "examples/spdm_hash_negotiation.rs"

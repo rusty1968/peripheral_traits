@@ -77,7 +77,7 @@ pub trait I3c: ErrorType {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// let static_addr = SevenBitAddress::new(0x52).unwrap();
     /// match controller.assign_dynamic_address(static_addr) {
     ///     Ok(dynamic_addr) => println!("Assigned dynamic address: {:?}", dynamic_addr),
