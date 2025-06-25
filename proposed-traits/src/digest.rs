@@ -432,6 +432,11 @@ pub trait DigestInit<A: DigestAlgorithm>: ErrorType {
     /// # Parameters
     ///
     /// - `algo`: A zero-sized type representing the digest algorithm to use.
+    ///   While this parameter is technically redundant (since the algorithm type
+    ///   is already specified in the trait bound), it serves important purposes:
+    ///   * **API clarity**: Makes call sites self-documenting
+    ///   * **Type inference**: Helps the compiler choose the correct implementation
+    ///   * **Consistency**: Follows established patterns in cryptographic APIs
     ///
     /// # Returns
     ///

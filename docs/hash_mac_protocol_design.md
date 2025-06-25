@@ -176,8 +176,6 @@ pub trait DynamicDigestOp {
     /// Copies the digest output to the provided buffer.
     fn copy_output(&self, output: &mut [u8]) -> Result<usize, Self::Error>;
 }
-```
-```
 
 ### Protocol-Aware Hash Selection
 
@@ -265,14 +263,17 @@ impl<D: DigestRegistry, M: MacRegistry> SpdmSession<D, M> {
 ### HAL Layer Implementation
 
 ```rust
-/// Hardware-accelerated digest registry for ASPEED chips
-pub struct AspeedDigestRegistry {
-    hw_base: *mut u8,
+/// Hardware-accelerated digest registry for embedded platforms
+pub struct PlatformDigestRegistry<H> {
+    crypto_handle: H,
     supported_algorithms: &'static [u32],
 }
 
-impl DigestRegistry for AspeedDigestRegistry {
-    type Error = AspeedDigestError;
+impl<H> DigestRegistry for PlatformDigestRegistry<H> 
+where 
+    H: CryptoHandle + Clone,
+{
+    type Error = PlatformDigestError;
     
     fn supports_algorithm(&self, algorithm_id: u32) -> bool {
         self.supported_algorithms.contains(&algorithm_id)
@@ -280,10 +281,48 @@ impl DigestRegistry for AspeedDigestRegistry {
     
     fn create_digest(&mut self, algorithm_id: u32) -> Result<Box<dyn DigestOpDyn>, Self::Error> {
         match algorithm_id {
-            SPDM_SHA256 => Ok(Box::new(AspeedSha256Op::new(self.hw_base)?)),
-            SPDM_SHA384 => Ok(Box::new(AspeedSha384Op::new(self.hw_base)?)),
-            SPDM_SHA512 => Ok(Box::new(AspeedSha512Op::new(self.hw_base)?)),
-            _ => Err(AspeedDigestError::UnsupportedAlgorithm),
+            SPDM_SHA256 => Ok(Box::new(PlatformSha256Op::new(self.crypto_handle.clone())?)),
+            SPDM_SHA384 => Ok(Box::new(PlatformSha384Op::new(self.crypto_handle.clone())?)),
+            SPDM_SHA512 => Ok(Box::new(PlatformSha512Op::new(self.crypto_handle.clone())?)),
+            _ => Err(PlatformDigestError::UnsupportedAlgorithm),
+        }
+    }
+}
+
+/// Trait for opaque crypto handles that can represent various backend types
+pub trait CryptoHandle {
+    type Error;
+    
+    /// Validate that the handle is still valid/accessible
+    fn is_valid(&self) -> bool;
+    
+    /// Get platform-specific handle information (for debugging/logging)
+    fn handle_info(&self) -> &str;
+}
+
+/// Example implementations for different platform types
+#[derive(Debug, Clone)]
+pub enum PlatformHandle {
+    /// Task/thread ID for async crypto operations
+    TaskId(u32),
+    /// Device driver handle/file descriptor
+    DeviceHandle(i32),
+}
+
+impl CryptoHandle for PlatformHandle {
+    type Error = PlatformError;
+    
+    fn is_valid(&self) -> bool {
+        match self {
+            PlatformHandle::TaskId(id) => *id != 0,
+            PlatformHandle::DeviceHandle(fd) => *fd >= 0,
+        }
+    }
+    
+    fn handle_info(&self) -> &str {
+        match self {
+            PlatformHandle::TaskId(_) => "async_task",
+            PlatformHandle::DeviceHandle(_) => "device_driver",
         }
     }
 }
@@ -291,1075 +330,14 @@ impl DigestRegistry for AspeedDigestRegistry {
 
 ## Embedded Systems Considerations
 
-### Memory Constraints
-
-In embedded contexts, memory usage is critical. Traditional heap allocation patterns are often unacceptable due to limited RAM and heap fragmentation concerns.
-
-#### Stack-Based Operations
-
-```rust
-/// Stack-allocated digest operations for memory-constrained environments
-pub trait DigestOpStack: ErrorType {
-    type Output;
-    const MAX_BLOCK_SIZE: usize = 64; // SHA-256/384/512 block size
-    const STATE_SIZE: usize; // Algorithm-specific state size
-    
-    fn update_stack(&mut self, input: &[u8]) -> Result<(), Self::Error>;
-    fn finalize_stack(self) -> Result<Self::Output, Self::Error>;
-    
-    /// Get memory footprint for this operation
-    fn memory_footprint() -> MemoryFootprint;
-}
-
-/// No-alloc registry for embedded systems
-pub trait DigestRegistryNoAlloc: ErrorType {
-    type DigestContext: DigestOpStack;
-    
-    /// Create digest context on the stack
-    fn create_digest_stack(&mut self, algorithm_id: u32) -> Result<Self::DigestContext, Self::Error>;
-    
-    /// Get algorithm info without allocation
-    fn get_algorithm_info(&self, algorithm_id: u32) -> Option<AlgorithmInfo>;
-    
-    /// Pre-check memory requirements before operation
-    fn check_memory_requirements(&self, algorithm_id: u32, available_stack: usize) -> bool;
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct AlgorithmInfo {
-    pub output_size: usize,
-    pub block_size: usize,
-    pub state_size: usize,
-    pub min_stack_bytes: usize,
-    pub alignment_requirement: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct MemoryFootprint {
-    pub stack_bytes: usize,
-    pub static_bytes: usize,
-    pub alignment: usize,
-    pub volatile_registers: usize, // For hardware implementations
-}
-```
-
-#### Buffer Management Patterns
-
-```rust
-/// Fixed-size buffer management for embedded digest operations
-pub struct DigestBuffer<const SIZE: usize> {
-    buffer: [u8; SIZE],
-    position: usize,
-}
-
-impl<const SIZE: usize> DigestBuffer<SIZE> {
-    const fn new() -> Self {
-        Self {
-            buffer: [0; SIZE],
-            position: 0,
-        }
-    }
-    
-    /// Add data to buffer, processing full blocks
-    fn update<D: DigestOpStack>(&mut self, digest: &mut D, data: &[u8]) -> Result<(), D::Error> {
-        let mut remaining = data;
-        
-        while !remaining.is_empty() {
-            let space = SIZE - self.position;
-            let to_copy = remaining.len().min(space);
-            
-            self.buffer[self.position..self.position + to_copy]
-                .copy_from_slice(&remaining[..to_copy]);
-            self.position += to_copy;
-            remaining = &remaining[to_copy..];
-            
-            if self.position == SIZE {
-                digest.update_stack(&self.buffer)?;
-                self.position = 0;
-            }
-        }
-        Ok(())
-    }
-    
-    /// Finalize with remaining buffer content
-    fn finalize<D: DigestOpStack>(mut self, mut digest: D) -> Result<D::Output, D::Error> {
-        if self.position > 0 {
-            digest.update_stack(&self.buffer[..self.position])?;
-        }
-        digest.finalize_stack()
-    }
-}
-
-/// Embedded-specific SPDM session with static buffers
-pub struct EmbeddedSpdmSession<const BUFFER_SIZE: usize> {
-    digest_buffer: DigestBuffer<BUFFER_SIZE>,
-    mac_buffer: DigestBuffer<BUFFER_SIZE>,
-    negotiated_hash: Option<u32>,
-    negotiated_mac: Option<u32>,
-}
-```
-
-### Real-Time Constraints
-
-Protocol negotiation and cryptographic operations in embedded systems must respect strict timing requirements. This is especially critical in safety-critical systems and high-frequency control loops.
-
-#### Time-Bounded Operations
-
-```rust
-/// Time-bounded hash operations for real-time systems
-pub trait DigestOpRealTime: DigestOpStack {
-    /// Maximum processing time per update call (in microseconds)
-    const MAX_UPDATE_TIME_US: u32;
-    
-    /// Maximum total operation time (in microseconds)
-    const MAX_TOTAL_TIME_US: u32;
-    
-    /// Non-blocking update for interrupt contexts
-    fn update_nonblocking(&mut self, input: &[u8]) -> Result<ProcessResult, Self::Error>;
-    
-    /// Check if operation can complete within deadline
-    fn can_complete_by(&self, deadline_us: u32) -> bool;
-    
-    /// Get current operation progress
-    fn get_progress(&self) -> OperationProgress;
-    
-    /// Suspend operation for higher priority tasks
-    fn suspend(&mut self) -> Result<SuspendToken, Self::Error>;
-    
-    /// Resume suspended operation
-    fn resume(&mut self, token: SuspendToken) -> Result<(), Self::Error>;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ProcessResult {
-    /// Operation completed successfully
-    Completed(usize), // bytes processed
-    /// Operation needs more time, call again
-    Partial(usize),   // bytes processed so far
-    /// Operation would exceed deadline
-    WouldBlock,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct OperationProgress {
-    pub bytes_processed: usize,
-    pub estimated_remaining_us: u32,
-    pub can_yield: bool,
-}
-
-/// Token for resuming suspended operations
-pub struct SuspendToken {
-    context: [u32; 8], // Platform-specific context
-    timestamp: u64,
-}
-```
-
-#### Interrupt-Safe Operations
-
-```rust
-/// Interrupt-safe digest operations
-pub trait DigestOpInterruptSafe: DigestOpRealTime {
-    /// Update from interrupt context (minimal processing)
-    fn update_from_interrupt(&mut self, input: &[u8]) -> Result<(), Self::Error>;
-    
-    /// Check if safe to call from current interrupt level
-    fn interrupt_safe(&self, irq_level: u8) -> bool;
-    
-    /// Atomic finalize operation
-    fn finalize_atomic(self) -> Result<Self::Output, Self::Error>;
-}
-
-/// Real-time SPDM message processor
-pub struct RealTimeSpdmProcessor<D: DigestOpRealTime> {
-    digest_op: Option<D>,
-    message_buffer: [u8; 1024],
-    buffer_pos: usize,
-    deadline_us: u32,
-}
-
-impl<D: DigestOpRealTime> RealTimeSpdmProcessor<D> {
-    /// Process message chunk within time budget
-    pub fn process_chunk(&mut self, chunk: &[u8], time_budget_us: u32) -> Result<ProcessResult, D::Error> {
-        let start_time = get_system_time_us();
-        
-        if let Some(ref mut digest) = self.digest_op {
-            let remaining_time = time_budget_us.saturating_sub(get_system_time_us() - start_time);
-            
-            if !digest.can_complete_by(remaining_time) {
-                return Ok(ProcessResult::WouldBlock);
-            }
-            
-            match digest.update_nonblocking(chunk)? {
-                ProcessResult::Completed(bytes) => {
-                    self.buffer_pos += bytes;
-                    Ok(ProcessResult::Completed(bytes))
-                },
-                ProcessResult::Partial(bytes) => {
-                    self.buffer_pos += bytes;
-                    Ok(ProcessResult::Partial(bytes))
-                },
-                ProcessResult::WouldBlock => Ok(ProcessResult::WouldBlock),
-            }
-        } else {
-            Err(/* no active digest operation */)
-        }
-    }
-}
-```
-
-#### Deterministic Timing
-
-```rust
-/// Constant-time digest operations for security-critical applications
-pub trait DigestOpConstantTime: DigestOpStack {
-    /// Process exactly one block in constant time
-    fn process_block_constant_time(&mut self, block: &[u8; Self::BLOCK_SIZE]) -> Result<(), Self::Error>;
-    
-    /// Constant-time conditional operation
-    fn conditional_update(&mut self, condition: bool, input: &[u8]) -> Result<(), Self::Error>;
-    
-    /// Timing-safe comparison
-    fn constant_time_eq(a: &[u8], b: &[u8]) -> bool;
-}
-
-/// Timing analysis utilities for embedded systems
-pub struct TimingAnalyzer {
-    measurements: [u32; 1000],
-    count: usize,
-}
-
-impl TimingAnalyzer {
-    pub fn measure_operation<F, R>(&mut self, operation: F) -> R 
-    where F: FnOnce() -> R 
-    {
-        let start = get_cycle_count();
-        let result = operation();
-        let end = get_cycle_count();
-        
-        if self.count < self.measurements.len() {
-            self.measurements[self.count] = end - start;
-            self.count += 1;
-        }
-        
-        result
-    }
-    
-    pub fn get_statistics(&self) -> TimingStatistics {
-        if self.count == 0 {
-            return TimingStatistics::default();
-        }
-        
-        let mut sorted = [0u32; 1000];
-        sorted[..self.count].copy_from_slice(&self.measurements[..self.count]);
-        sorted[..self.count].sort_unstable();
-        
-        TimingStatistics {
-            min: sorted[0],
-            max: sorted[self.count - 1],
-            median: sorted[self.count / 2],
-            p95: sorted[(self.count * 95) / 100],
-            p99: sorted[(self.count * 99) / 100],
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct TimingStatistics {
-    pub min: u32,
-    pub max: u32,
-    pub median: u32,
-    pub p95: u32,
-    pub p99: u32,
-}
-```
-
-### Hardware Acceleration Integration
-
-Embedded systems often have dedicated cryptographic hardware that must be carefully managed to ensure optimal performance and resource utilization.
-
-#### Hardware Resource Management
-
-```rust
-/// Hardware-specific digest operations with resource management
-pub trait HardwareDigest: ErrorType {
-    /// Check if hardware is available and ready
-    fn hw_available(&self) -> bool;
-    
-    /// Check hardware capabilities
-    fn hw_capabilities(&self) -> HardwareCapabilities;
-    
-    /// Reserve hardware for exclusive use
-    fn reserve_hw(&mut self, timeout_us: u32) -> Result<HardwareReservation, Self::Error>;
-    
-    /// Fallback to software implementation
-    fn fallback_to_software(&mut self) -> Result<(), Self::Error>;
-    
-    /// Hardware context preservation for task switching
-    fn save_hw_context(&mut self) -> Result<HwContext, Self::Error>;
-    fn restore_hw_context(&mut self, context: HwContext) -> Result<(), Self::Error>;
-    
-    /// Check for hardware errors/faults
-    fn check_hw_status(&self) -> HardwareStatus;
-    
-    /// Reset hardware to known state
-    fn reset_hw(&mut self) -> Result<(), Self::Error>;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct HardwareCapabilities {
-    pub supported_algorithms: &'static [u32],
-    pub max_message_size: usize,
-    pub dma_capable: bool,
-    pub concurrent_operations: u8,
-    pub power_states: &'static [PowerState],
-}
-
-#[repr(C)]
-pub struct HwContext {
-    registers: [u32; 16], // Platform-specific register state
-    dma_state: Option<DmaState>,
-    algorithm_state: AlgorithmState,
-    interrupt_mask: u32,
-}
-
-#[derive(Debug)]
-pub struct HardwareReservation {
-    token: u64,
-    reserved_until: u64,
-    exclusive: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum HardwareStatus {
-    Ready,
-    Busy,
-    Error(HwErrorCode),
-    Maintenance,
-    PowerDown,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum HwErrorCode {
-    BusError,
-    ConfigError,
-    TimeoutError,
-    IntegrityError,
-    OverheatError,
-}
-```
-
-#### DMA Integration
-
-```rust
-/// DMA-capable digest operations for high throughput
-pub trait DigestOpDma: HardwareDigest {
-    /// Start DMA transfer for large data blocks
-    fn start_dma_transfer(&mut self, source: &[u8], completion: DmaCompletion) -> Result<DmaTransfer, Self::Error>;
-    
-    /// Check DMA transfer status
-    fn check_dma_status(&self, transfer: &DmaTransfer) -> DmaStatus;
-    
-    /// Wait for DMA completion with timeout
-    fn wait_dma_completion(&self, transfer: DmaTransfer, timeout_us: u32) -> Result<DmaResult, Self::Error>;
-    
-    /// Cancel ongoing DMA transfer
-    fn cancel_dma(&mut self, transfer: DmaTransfer) -> Result<(), Self::Error>;
-}
-
-pub struct DmaTransfer {
-    channel: u8,
-    transaction_id: u32,
-    start_time: u64,
-}
-
-#[derive(Debug)]
-pub enum DmaStatus {
-    InProgress { bytes_transferred: usize },
-    Completed { total_bytes: usize },
-    Error(DmaError),
-}
-
-#[derive(Debug)]
-pub enum DmaError {
-    BusError,
-    AddressError,
-    PermissionError,
-    Timeout,
-}
-
-pub enum DmaCompletion {
-    Blocking,
-    Interrupt(fn(DmaResult)),
-    Callback(Box<dyn FnOnce(DmaResult)>),
-}
-
-/// ASPEED crypto engine with DMA support
-pub struct AspeedCryptoEngine {
-    base_addr: *mut u8,
-    dma_controller: *mut u8,
-    reserved: Option<HardwareReservation>,
-    active_transfers: heapless::Vec<DmaTransfer, 4>,
-}
-
-impl AspeedCryptoEngine {
-    /// Process large SPDM message using DMA
-    pub fn process_spdm_message_dma(&mut self, message: &[u8]) -> Result<[u8; 32], AspeedError> {
-        // Reserve hardware
-        let _reservation = self.reserve_hw(1000)?; // 1ms timeout
-        
-        // Configure for SHA-256
-        self.configure_sha256()?;
-        
-        // Start DMA transfer for large message
-        if message.len() > 1024 {
-            let transfer = self.start_dma_transfer(message, DmaCompletion::Blocking)?;
-            let result = self.wait_dma_completion(transfer, 10000)?; // 10ms timeout
-            
-            match result {
-                DmaResult::Success(hash) => Ok(hash),
-                DmaResult::Error(e) => Err(AspeedError::DmaError(e)),
-            }
-        } else {
-            // Use programmed I/O for small messages
-            self.process_message_pio(message)
-        }
-    }
-}
-```
-
-#### Hardware Abstraction Layer
-
-```rust
-/// Platform-agnostic hardware abstraction for crypto operations
-pub trait CryptoHal {
-    type Error;
-    type DigestOp: HardwareDigest<Error = Self::Error>;
-    type MacOp: HardwareDigest<Error = Self::Error>;
-    
-    /// Detect available crypto hardware
-    fn detect_hardware(&mut self) -> Result<HardwareInfo, Self::Error>;
-    
-    /// Initialize crypto subsystem
-    fn init_crypto(&mut self) -> Result<(), Self::Error>;
-    
-    /// Create hardware-accelerated digest operation
-    fn create_hw_digest(&mut self, algorithm: u32) -> Result<Self::DigestOp, Self::Error>;
-    
-    /// Create hardware-accelerated MAC operation
-    fn create_hw_mac(&mut self, algorithm: u32, key: &[u8]) -> Result<Self::MacOp, Self::Error>;
-    
-    /// Get hardware performance characteristics
-    fn get_performance_info(&self) -> PerformanceInfo;
-}
-
-#[derive(Debug)]
-pub struct HardwareInfo {
-    pub vendor_id: u32,
-    pub device_id: u32,
-    pub revision: u8,
-    pub capabilities: HardwareCapabilities,
-    pub firmware_version: Option<[u8; 16]>,
-}
-
-#[derive(Debug)]
-pub struct PerformanceInfo {
-    pub throughput_mbps: u32,
-    pub latency_us: u32,
-    pub power_mw: u16,
-    pub concurrent_ops: u8,
-}
-
-/// Platform-specific implementations
-impl CryptoHal for AspeedCryptoHal {
-    type Error = AspeedError;
-    type DigestOp = AspeedDigestOp;
-    type MacOp = AspeedMacOp;
-    
-    fn detect_hardware(&mut self) -> Result<HardwareInfo, Self::Error> {
-        let vendor_id = self.read_register(VENDOR_ID_REG)?;
-        let device_id = self.read_register(DEVICE_ID_REG)?;
-        
-        if vendor_id != ASPEED_VENDOR_ID {
-            return Err(AspeedError::UnsupportedHardware);
-        }
-        
-        Ok(HardwareInfo {
-            vendor_id,
-            device_id,
-            revision: self.read_register(REVISION_REG)? as u8,
-            capabilities: self.detect_capabilities()?,
-            firmware_version: self.read_firmware_version()?,
-        })
-    }
-}
-```
-
-### Power Management
-
-Embedded systems require sophisticated power management to balance performance with energy efficiency, especially in battery-powered or energy-harvesting applications.
-
-#### Power-Aware Cryptographic Operations
-
-```rust
-/// Power-aware cryptographic operations with detailed energy modeling
-pub trait PowerAwareDigest: ErrorType {
-    /// Estimate power consumption for operation
-    fn estimate_power_usage(&self, data_size: usize) -> PowerEstimate;
-    
-    /// Request specific power mode for operations
-    fn set_power_mode(&mut self, mode: PowerMode) -> Result<(), Self::Error>;
-    
-    /// Get current power consumption
-    fn get_current_power(&self) -> Result<PowerMeasurement, Self::Error>;
-    
-    /// Prepare for system suspend
-    fn prepare_suspend(&mut self) -> Result<SuspendState, Self::Error>;
-    fn resume_from_suspend(&mut self, state: SuspendState) -> Result<(), Self::Error>;
-    
-    /// Schedule operation for optimal power efficiency
-    fn schedule_for_efficiency(&mut self, deadline: u64, priority: PowerPriority) -> Result<ScheduleToken, Self::Error>;
-    
-    /// Energy budget management
-    fn set_energy_budget(&mut self, budget: EnergyBudget) -> Result<(), Self::Error>;
-    fn get_remaining_budget(&self) -> EnergyBudget;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct PowerEstimate {
-    pub energy_microjoules: u32,
-    pub peak_current_ma: u16,
-    pub average_current_ma: u16,
-    pub duration_us: u32,
-    pub thermal_impact: ThermalImpact,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum PowerMode {
-    HighPerformance,  // Maximum speed, highest power
-    Balanced,         // Good balance of speed and power
-    LowPower,        // Minimum power, slower processing
-    UltraLowPower,   // Minimal power, very slow
-    Adaptive,        // Automatically adjust based on conditions
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct PowerMeasurement {
-    pub voltage_mv: u16,
-    pub current_ma: u16,
-    pub power_mw: u16,
-    pub temperature_c: i8,
-    pub efficiency_percent: u8,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum PowerPriority {
-    Critical,    // Must complete regardless of power cost
-    High,        // Important but consider power
-    Normal,      // Standard priority
-    Background,  // Can be deferred for power savings
-}
-
-#[derive(Debug, Clone)]
-pub struct EnergyBudget {
-    pub total_microjoules: u32,
-    pub consumed_microjoules: u32,
-    pub window_duration_ms: u32,
-    pub hard_limit: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ThermalImpact {
-    Negligible,
-    Low,
-    Moderate,
-    High,
-    Critical,
-}
-```
-
-#### Dynamic Voltage and Frequency Scaling (DVFS)
-
-```rust
-/// DVFS-aware digest operations
-pub trait DigestOpDvfs: PowerAwareDigest {
-    /// Get supported voltage/frequency combinations
-    fn get_supported_dvfs_states(&self) -> &[DvfsState];
-    
-    /// Request optimal DVFS state for current workload
-    fn request_optimal_dvfs(&mut self, workload: WorkloadCharacteristics) -> Result<DvfsState, Self::Error>;
-    
-    /// Adapt to DVFS transition
-    fn handle_dvfs_transition(&mut self, old_state: DvfsState, new_state: DvfsState) -> Result<(), Self::Error>;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct DvfsState {
-    pub voltage_mv: u16,
-    pub frequency_mhz: u16,
-    pub power_mw: u16,
-    pub performance_factor: f32, // Relative to maximum performance
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct WorkloadCharacteristics {
-    pub data_size: usize,
-    pub deadline_us: u32,
-    pub computational_intensity: ComputationalIntensity,
-    pub memory_access_pattern: MemoryAccessPattern,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ComputationalIntensity {
-    Light,    // Simple hash operations
-    Moderate, // Standard crypto operations
-    Heavy,    // Complex multi-stage operations
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum MemoryAccessPattern {
-    Sequential,  // Linear memory access
-    Random,      // Random memory access
-    Streaming,   // Continuous streaming
-    Burst,       // Bursty access patterns
-}
-```
-
-#### Sleep State Management
-
-```rust
-/// Sleep state management for crypto operations
-pub trait CryptoSleepManager {
-    type Error;
-    
-    /// Enter sleep state when idle
-    fn enter_sleep(&mut self, max_sleep_us: u32) -> Result<SleepResult, Self::Error>;
-    
-    /// Wake from sleep state
-    fn wake_from_sleep(&mut self) -> Result<(), Self::Error>;
-    
-    /// Set wake conditions
-    fn configure_wake_sources(&mut self, sources: &[WakeSource]) -> Result<(), Self::Error>;
-    
-    /// Get time until next required wake
-    fn time_until_next_wake(&self) -> Option<u32>;
-}
-
-#[derive(Debug)]
-pub enum SleepResult {
-    SleptFor(u32),           // Microseconds actually slept
-    WokeEarly(WakeReason),   // Woke before timeout
-    CouldNotSleep,           // Sleep not possible
-}
-
-#[derive(Debug)]
-pub enum WakeReason {
-    Timeout,
-    Interrupt,
-    ExternalEvent,
-    ProtocolMessage,
-    ScheduledOperation,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum WakeSource {
-    Timer(u32),              // Wake after specified microseconds
-    Interrupt(u8),           // Wake on specific interrupt
-    NetworkActivity,         // Wake on network traffic
-    ProtocolEvent,          // Wake on protocol-specific events
-}
-
-/// Power-efficient SPDM session manager
-pub struct PowerEfficientSpdmSession<D: PowerAwareDigest> {
-    digest_provider: D,
-    power_budget: EnergyBudget,
-    sleep_manager: Box<dyn CryptoSleepManager<Error = D::Error>>,
-    scheduled_operations: heapless::Vec<ScheduledOperation, 8>,
-}
-
-impl<D: PowerAwareDigest> PowerEfficientSpdmSession<D> {
-    /// Process SPDM message with power optimization
-    pub fn process_message_power_optimized(
-        &mut self, 
-        message: &[u8], 
-        deadline: u64, 
-        priority: PowerPriority
-    ) -> Result<Vec<u8>, D::Error> {
-        // Check energy budget
-        let estimate = self.digest_provider.estimate_power_usage(message.len());
-        if estimate.energy_microjoules > self.power_budget.total_microjoules - self.power_budget.consumed_microjoules {
-            if !self.power_budget.hard_limit {
-                // Try to defer or optimize
-                return self.defer_or_optimize(message, deadline, priority);
-            } else {
-                return Err(/* energy budget exceeded */);
-            }
-        }
-        
-        // Set optimal power mode based on deadline and priority
-        let power_mode = self.calculate_optimal_power_mode(deadline, priority);
-        self.digest_provider.set_power_mode(power_mode)?;
-        
-        // Schedule operation if not urgent
-        if priority == PowerPriority::Background {
-            let token = self.digest_provider.schedule_for_efficiency(deadline, priority)?;
-            self.scheduled_operations.push(ScheduledOperation {
-                token,
-                message_hash: self.hash_message(message),
-                deadline,
-            })?;
-            return Ok(vec![]); // Will process later
-        }
-        
-        // Process immediately
-        self.process_message_immediate(message)
-    }
-    
-    /// Enter power-saving mode during idle periods
-    pub fn enter_idle_mode(&mut self) -> Result<(), D::Error> {
-        // Save current state
-        let suspend_state = self.digest_provider.prepare_suspend()?;
-        
-        // Calculate maximum sleep time
-        let next_operation = self.scheduled_operations.iter()
-            .map(|op| op.deadline)
-            .min()
-            .unwrap_or(u64::MAX);
-        
-        let current_time = get_system_time_us();
-        let max_sleep = if next_operation > current_time {
-            (next_operation - current_time) as u32
-        } else {
-            0
-        };
-        
-        if max_sleep > 1000 { // Only sleep if worthwhile (>1ms)
-            self.sleep_manager.configure_wake_sources(&[
-                WakeSource::Timer(max_sleep),
-                WakeSource::NetworkActivity,
-                WakeSource::ProtocolEvent,
-            ])?;
-            
-            match self.sleep_manager.enter_sleep(max_sleep)? {
-                SleepResult::SleptFor(duration) => {
-                    // Update power savings
-                    self.update_power_savings(duration);
-                },
-                SleepResult::WokeEarly(reason) => {
-                    // Handle early wake
-                    self.handle_early_wake(reason)?;
-                },
-                SleepResult::CouldNotSleep => {
-                    // Continue normal operation
-                },
-            }
-        }
-        
-        // Resume crypto operations
-        self.digest_provider.resume_from_suspend(suspend_state)?;
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct ScheduledOperation {
-    token: ScheduleToken,
-    message_hash: u32,
-    deadline: u64,
-}
-```
-
-### Embedded Security Considerations
-
-Embedded systems face unique security challenges that must be addressed in the cryptographic trait design.
-
-#### Side-Channel Attack Resistance
-
-```rust
-/// Side-channel resistant operations for security-critical embedded systems
-pub trait SideChannelResistant: ErrorType {
-    /// Constant-time implementation guarantee
-    fn is_constant_time(&self) -> bool;
-    
-    /// Memory access pattern randomization
-    fn enable_access_randomization(&mut self, enabled: bool) -> Result<(), Self::Error>;
-    
-    /// Power analysis countermeasures
-    fn enable_power_countermeasures(&mut self, level: CountermeasureLevel) -> Result<(), Self::Error>;
-    
-    /// Timing randomization for operation completion
-    fn add_timing_jitter(&mut self, max_jitter_us: u32) -> Result<(), Self::Error>;
-    
-    /// Clear sensitive data from memory
-    fn secure_clear(&mut self) -> Result<(), Self::Error>;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum CountermeasureLevel {
-    None,
-    Basic,      // Basic power line filtering
-    Enhanced,   // Active power randomization
-    Military,   // Full spectrum countermeasures
-}
-
-/// Secure memory management for embedded crypto operations
-pub trait SecureMemory {
-    /// Allocate secure memory region
-    fn allocate_secure(&mut self, size: usize) -> Result<SecureBuffer, Self::Error>;
-    
-    /// Lock memory pages to prevent swapping
-    fn lock_memory(&mut self, buffer: &mut [u8]) -> Result<(), Self::Error>;
-    
-    /// Securely zero memory
-    fn secure_zero(&mut self, buffer: &mut [u8]);
-    
-    /// Check for memory tampering
-    fn verify_integrity(&self, buffer: &[u8]) -> Result<bool, Self::Error>;
-}
-
-/// Secure buffer with automatic cleanup
-pub struct SecureBuffer {
-    ptr: *mut u8,
-    size: usize,
-    canary: u64,
-}
-
-impl SecureBuffer {
-    /// Access buffer data safely
-    pub fn as_slice(&self) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self.ptr, self.size) }
-    }
-    
-    /// Access buffer data mutably
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { core::slice::from_raw_parts_mut(self.ptr, self.size) }
-    }
-    
-    /// Check for buffer overflow attacks
-    pub fn check_canary(&self) -> bool {
-        // Implementation would check canary values
-        true
-    }
-}
-
-impl Drop for SecureBuffer {
-    fn drop(&mut self) {
-        // Securely clear memory before deallocation
-        if !self.ptr.is_null() {
-            unsafe {
-                core::ptr::write_bytes(self.ptr, 0, self.size);
-                // Additional randomization passes could be added here
-            }
-        }
-    }
-}
-```
-
-#### Trusted Execution Environment (TEE) Integration
-
-```rust
-/// TEE-aware cryptographic operations
-pub trait TeeAwareDigest: ErrorType {
-    /// Execute operation in trusted environment
-    fn execute_in_tee(&mut self, operation: TeeOperation) -> Result<TeeResult, Self::Error>;
-    
-    /// Verify execution environment trust level
-    fn verify_trust_level(&self) -> TrustLevel;
-    
-    /// Attest operation integrity
-    fn create_attestation(&self) -> Result<AttestationToken, Self::Error>;
-    
-    /// Seal data to current environment
-    fn seal_data(&mut self, data: &[u8]) -> Result<SealedData, Self::Error>;
-    
-    /// Unseal previously sealed data
-    fn unseal_data(&mut self, sealed: &SealedData) -> Result<Vec<u8>, Self::Error>;
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum TrustLevel {
-    Untrusted,          // Normal world execution
-    Secure,             // Secure world execution
-    TrustedApplication, // Trusted application context
-    Hardware,           // Hardware-backed security
-}
-
-pub struct TeeOperation {
-    pub operation_type: TeeOpType,
-    pub input_data: &'static [u8],
-    pub expected_output_size: usize,
-}
-
-#[derive(Debug)]
-pub enum TeeOpType {
-    Digest(u32),          // Algorithm ID
-    Mac(u32, &'static [u8]), // Algorithm ID + key
-    KeyDerivation,
-    RandomGeneration,
-}
-
-/// ARM TrustZone integration for ASPEED systems
-pub struct AspeedTrustZoneDigest {
-    secure_world_interface: *mut u8,
-    trust_level: TrustLevel,
-    attestation_key: Option<[u8; 32]>,
-}
-
-impl TeeAwareDigest for AspeedTrustZoneDigest {
-    type Error = AspeedTeeError;
-    
-    fn execute_in_tee(&mut self, operation: TeeOperation) -> Result<TeeResult, Self::Error> {
-        // Transition to secure world
-        let smc_result = self.secure_monitor_call(
-            SMC_CRYPTO_OPERATION,
-            operation.operation_type as u64,
-            operation.input_data.as_ptr() as u64,
-            operation.input_data.len() as u64,
-        )?;
-        
-        // Verify result integrity
-        if !self.verify_result_integrity(&smc_result) {
-            return Err(AspeedTeeError::IntegrityFailure);
-        }
-        
-        Ok(TeeResult {
-            data: smc_result.output,
-            attestation: smc_result.attestation,
-            trust_level: TrustLevel::Secure,
-        })
-    }
-    
-    fn verify_trust_level(&self) -> TrustLevel {
-        if self.is_in_secure_world() {
-            TrustLevel::Secure
-        } else {
-            TrustLevel::Untrusted
-        }
-    }
-}
-```
-
-#### Fault Injection Resistance
-
-```rust
-/// Fault injection resistant operations
-pub trait FaultResistant: ErrorType {
-    /// Execute operation with redundancy checks
-    fn execute_with_redundancy(&mut self, operation: FaultResistantOp) -> Result<VerifiedResult, Self::Error>;
-    
-    /// Detect and handle fault injection attempts
-    fn detect_fault_injection(&self) -> Result<FaultDetectionResult, Self::Error>;
-    
-    /// Configure fault detection sensitivity
-    fn set_fault_detection_level(&mut self, level: FaultDetectionLevel) -> Result<(), Self::Error>;
-    
-    /// Reset after detected fault
-    fn fault_recovery(&mut self) -> Result<(), Self::Error>;
-}
-
-#[derive(Debug)]
-pub struct FaultResistantOp {
-    pub primary_operation: Box<dyn FnOnce() -> Result<Vec<u8>, ()>>,
-    pub verification_operation: Box<dyn FnOnce(&[u8]) -> bool>,
-    pub redundancy_level: RedundancyLevel,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum RedundancyLevel {
-    None,
-    Dual,      // Execute twice, compare results
-    Triple,    // Execute three times, majority vote
-    Adaptive,  // Adjust based on environmental conditions
-}
-
-#[derive(Debug)]
-pub struct FaultDetectionResult {
-    pub fault_detected: bool,
-    pub fault_type: Option<FaultType>,
-    pub confidence: u8, // 0-100
-    pub recommended_action: FaultAction,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum FaultType {
-    VoltageGlitch,
-    ClockGlitch,
-    LaserFault,
-    EMIFault,
-    TemperatureFault,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum FaultAction {
-    Continue,
-    Retry,
-    Reset,
-    Shutdown,
-    Alert,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum FaultDetectionLevel {
-    Minimal,   // Basic checks
-    Standard,  // Standard fault detection
-    Paranoid,  // Maximum sensitivity
-}
-
-/// Fault-resistant SPDM implementation
-pub struct FaultResistantSpdm<D: FaultResistant> {
-    digest_provider: D,
-    fault_counter: u32,
-    max_faults: u32,
-}
-
-impl<D: FaultResistant> FaultResistantSpdm<D> {
-    pub fn process_critical_message(&mut self, message: &[u8]) -> Result<Vec<u8>, D::Error> {
-        // Check for environmental fault conditions
-        let fault_result = self.digest_provider.detect_fault_injection()?;
-        if fault_result.fault_detected {
-            self.fault_counter += 1;
-            
-            match fault_result.recommended_action {
-                FaultAction::Retry => {
-                    if self.fault_counter < self.max_faults {
-                        return self.process_critical_message(message); // Recursive retry
-                    } else {
-                        return Err(/* too many faults */);
-                    }
-                },
-                FaultAction::Reset => {
-                    self.digest_provider.fault_recovery()?;
-                    self.fault_counter = 0;
-                },
-                FaultAction::Shutdown => {
-                    return Err(/* system shutdown required */);
-                },
-                _ => {},
-            }
-        }
-        
-        // Execute with fault resistance
-        let operation = FaultResistantOp {
-            primary_operation: Box::new(|| {
-                // Primary hash computation
-                self.compute_hash_primary(message)
-            }),
-            verification_operation: Box::new(|result| {
-                // Verify result consistency
-                self.verify_hash_result(result, message)
-            }),
-            redundancy_level: RedundancyLevel::Triple,
-        };
-        
-        let verified_result = self.digest_provider.execute_with_redundancy(operation)?;
-        
-        if verified_result.confidence < 95 {
-            return Err(/* low confidence result */);
-        }
-        
-        Ok(verified_result.data)
-    }
-}
-```
+**TBD**: This section will detail embedded-specific requirements and optimizations for the cryptographic trait design, including:
+
+- Memory constraints and stack-based operations
+- Real-time timing requirements and interrupt-safe operations  
+- Hardware acceleration integration and resource management
+- Power management and energy efficiency considerations
+- Security hardening against side-channel attacks and fault injection
+- Platform-specific optimizations for common embedded targets
 
 ## Key Design Principles
 
@@ -1384,27 +362,18 @@ impl<D: FaultResistant> FaultResistantSpdm<D> {
 
 - **Hardware Integration**: Native support for crypto accelerators, DMA operations, and TEE environments maximizes performance while maintaining security guarantees.
 
-- **Security-by-Design**: Built-in protection against side-channel attacks, fault injection, and other embedded-specific threats ensures robust security even in hostile environments.
-
 ### 4. Performance Considerations
 - **Zero-cost static path**: Direct trait implementations for compile-time known algorithms
 - **Minimal dynamic overhead**: Efficient runtime dispatch only when protocol negotiation is required
 - **Hardware acceleration**: Transparent integration with platform-specific crypto engines
-- **Memory locality**: Cache-friendly data structures and access patterns
 
-### 5. Security-by-Design
-- **Side-channel resistance**: Constant-time operations and power analysis countermeasures
-- **Fault tolerance**: Redundant execution and integrity verification
-- **TEE integration**: Support for trusted execution environments and secure world operations
-- **Memory protection**: Secure buffer management and automatic cleanup
-
-### 6. Error Handling Strategy
+### 5. Error Handling Strategy
 - **Layered error types**: Protocol errors separate from implementation and hardware errors
 - **Graceful degradation**: Fallback mechanisms for hardware failures and capability mismatches
 - **Security-aware errors**: No information leakage through error messages
 - **Recovery mechanisms**: Automatic fault recovery and system resilience
 
-### 7. Composability and Extensibility
+### 6. Composability and Extensibility
 - **Trait composition**: Mix-and-match capabilities through composable trait bounds
 - **Platform adaptation**: Easy integration with new hardware platforms and crypto engines
 - **Algorithm agility**: Support for emerging cryptographic algorithms without major refactoring
@@ -1443,8 +412,6 @@ The enhanced design specifically addresses embedded system constraints through:
 **Power Optimization**: Sophisticated power management including energy budgeting, DVFS integration, and intelligent operation scheduling enables battery-powered and energy-harvesting applications.
 
 **Hardware Integration**: Native support for crypto accelerators, DMA operations, and TEE environments maximizes performance while maintaining security guarantees.
-
-**Security-by-Design**: Built-in protection against side-channel attacks, fault injection, and other embedded-specific threats ensures robust security even in hostile environments.
 
 ### Scalability and Adaptability
 
@@ -1506,16 +473,16 @@ Provide clear guidance for embedded system integration:
 - Performance characteristics documentation for different platforms
 - Power consumption guidelines and optimization strategies
 - Security considerations and threat model documentation
-- Integration examples for common embedded platforms (ASPEED, ARM Cortex-M, RISC-V)
+- Integration examples for common embedded platforms (ASPEED, OpenTitan, ARM Cortex-M, RISC-V)
 
 ### 7. Platform-Specific Optimizations
 Create reference implementations for common embedded platforms:
-- ASPEED crypto engine integration with full feature support
+- ASPEED and OpenTitan crypto engine integration with full feature support
 - ARM TrustZone integration for TEE-aware operations
 - Low-power microcontroller adaptations
 - FPGA-based crypto accelerator support
 
-This enhanced design enables robust, secure, and efficient cryptographic operations that can adapt to diverse protocol requirements while maintaining the performance characteristics essential for embedded systems. The focus on memory efficiency, real-time guarantees, power optimization, and security-by-design makes it suitable for the most demanding embedded applications including safety-critical systems, IoT devices, and infrastructure controllers.
+This enhanced design enables robust, secure, and efficient cryptographic operations that can adapt to diverse protocol requirements while maintaining the performance characteristics essential for embedded systems. The focus on memory efficiency, real-time guarantees, and power optimization makes it suitable for the most demanding embedded applications including safety-critical systems, IoT devices, and infrastructure controllers.
 
 ## Dynamic-Static Trait Interoperation Example
 
@@ -1588,17 +555,21 @@ impl<A: DigestAlgorithm> DigestOp for DynamicToStaticAdapter<A> {
 
 ```rust
 /// Hybrid registry supporting both static and dynamic implementations
-pub struct HybridDigestRegistry {
+pub struct HybridDigestRegistry<H: CryptoHandle> {
     // Static implementations for compile-time known algorithms
-    sha256_impl: Option<Box<dyn Fn() -> AspeedSha256Op>>,
-    sha384_impl: Option<Box<dyn Fn() -> AspeedSha384Op>>,
-    sha512_impl: Option<Box<dyn Fn() -> AspeedSha512Op>>,
+    sha256_impl: Option<Box<dyn Fn() -> PlatformSha256Op<H>>>,
+    sha384_impl: Option<Box<dyn Fn() -> PlatformSha384Op<H>>>,
+    sha512_impl: Option<Box<dyn Fn() -> PlatformSha512Op<H>>>,
     
     // Dynamic registry for runtime algorithm selection
     dynamic_providers: HashMap<u32, Box<dyn DigestProvider>>,
     
     // Performance optimization: prefer static when available
     prefer_static: bool,
+    
+    // Platform handle for creating new operations
+    crypto_handle: H,
+}
 }
 
 trait DigestProvider {
@@ -1615,20 +586,21 @@ pub enum PerformanceClass {
     HardwareNative,
 }
 
-impl HybridDigestRegistry {
-    pub fn new() -> Self {
+impl<H: CryptoHandle + Clone> HybridDigestRegistry<H> {
+    pub fn new(crypto_handle: H) -> Self {
         Self {
             sha256_impl: None,
             sha384_impl: None,
             sha512_impl: None,
             dynamic_providers: HashMap::new(),
             prefer_static: true,
+            crypto_handle,
         }
     }
     
     /// Register static implementation for optimal performance
     pub fn register_static_sha256<F>(&mut self, factory: F) 
-    where F: Fn() -> AspeedSha256Op + 'static 
+    where F: Fn() -> PlatformSha256Op<H> + 'static 
     {
         self.sha256_impl = Some(Box::new(factory));
     }
@@ -1639,7 +611,7 @@ impl HybridDigestRegistry {
     }
     
     /// Create digest with optimal dispatch strategy
-    pub fn create_optimized_digest(&mut self, algorithm_id: u32) -> Result<OptimizedDigest, RegistryError> {
+    pub fn create_optimized_digest(&mut self, algorithm_id: u32) -> Result<OptimizedDigest<H>, RegistryError> {
         match algorithm_id {
             SPDM_SHA256 if self.prefer_static && self.sha256_impl.is_some() => {
                 // Use static implementation for maximum performance
@@ -1661,27 +633,27 @@ impl HybridDigestRegistry {
 }
 
 /// Optimized digest operation that can use either static or dynamic dispatch
-pub enum OptimizedDigest {
-    Static(StaticDigestVariant),
+pub enum OptimizedDigest<H: CryptoHandle> {
+    Static(StaticDigestVariant<H>),
     Dynamic(Box<dyn DigestOpDyn>),
 }
 
-pub enum StaticDigestVariant {
-    Sha256(AspeedSha256Op),
-    Sha384(AspeedSha384Op),
-    Sha512(AspeedSha512Op),
+pub enum StaticDigestVariant<H: CryptoHandle> {
+    Sha256(PlatformSha256Op<H>),
+    Sha384(PlatformSha384Op<H>),
+    Sha512(PlatformSha512Op<H>),
 }
 
-impl DigestOpDyn for OptimizedDigest {
+impl<H: CryptoHandle> DigestOpDyn for OptimizedDigest<H> {
     type Error = HybridError;
     
     fn update(&mut self, input: &[u8]) -> Result<(), Self::Error> {
         match self {
             OptimizedDigest::Static(variant) => {
                 match variant {
-                    StaticDigestVariant::Sha256(op) => op.update(input).map_err(HybridError::Static),
-                    StaticDigestVariant::Sha384(op) => op.update(input).map_err(HybridError::Static),
-                    StaticDigestVariant::Sha512(op) => op.update(input).map_err(HybridError::Static),
+                    StaticDigestVariant::Sha256(op) => op.update(input).map_err(HybridError::Platform),
+                    StaticDigestVariant::Sha384(op) => op.update(input).map_err(HybridError::Platform),
+                    StaticDigestVariant::Sha512(op) => op.update(input).map_err(HybridError::Platform),
                 }
             },
             OptimizedDigest::Dynamic(op) => op.update(input).map_err(HybridError::Dynamic),
@@ -1726,7 +698,7 @@ impl DigestOpDyn for OptimizedDigest {
 
 #[derive(Debug)]
 pub enum HybridError {
-    Static(AspeedDigestError),
+    Platform(PlatformDigestError),
     Dynamic(Box<dyn core::error::Error>),
     Registry(RegistryError),
 }
@@ -1735,7 +707,7 @@ pub enum HybridError {
 ### Protocol Negotiation with Hybrid Dispatch
 
 ```rust
-/// SPDM session that optimally uses both static and dynamic implementations
+/// SPDM session that optimally uses static and dynamic implementations
 pub struct HybridSpdmSession {
     registry: HybridDigestRegistry,
     negotiated_algorithm: Option<u32>,
@@ -1759,11 +731,11 @@ pub struct PowerBudget {
 }
 
 impl HybridSpdmSession {
-    pub fn new() -> Self {
-        let mut registry = HybridDigestRegistry::new();
+    pub fn new(crypto_handle: PlatformHandle) -> Self {
+        let mut registry = HybridDigestRegistry::new(crypto_handle.clone());
         
         // Register static implementations for maximum performance
-        registry.register_static_sha256(|| AspeedSha256Op::new_hardware());
+        registry.register_static_sha256(move || PlatformSha256Op::new(crypto_handle.clone()).unwrap());
         
         // Register dynamic implementations for flexibility
         registry.register_dynamic_provider(SPDM_SHA384, Box::new(Sha384Provider::new()));
@@ -1951,11 +923,19 @@ impl HybridSpdmSession {
     }
 }
 
-/// Complete example usage in embedded context
+/// Complete example usage in embedded context showing different handle types
 pub fn embedded_spdm_example() -> Result<(), Box<dyn core::error::Error>> {
-    let mut spdm_session = HybridSpdmSession::new();
+    // Example 1: Async task-based crypto operations
+    let task_handle = PlatformHandle::TaskId(42);
+    let mut spdm_session_async = HybridSpdmSession::new(task_handle);
+    println!("Created SPDM session with async task crypto");
     
-    // Scenario 1: Initial negotiation with performance requirements
+    // Example 2: Device driver interface (TockOS, etc.)
+    let device_handle = PlatformHandle::DeviceHandle(3); // /dev/crypto file descriptor
+    let mut spdm_session_dev = HybridSpdmSession::new(device_handle);
+    println!("Created SPDM session with device driver crypto");
+    
+    // Scenario 1: Initial negotiation with performance requirements (using async task)
     let peer_algorithms = &[SPDM_SHA256, SPDM_SHA384, SPDM_SHA512];
     let real_time_requirements = PerformanceRequirements {
         max_latency_us: 1000,  // 1ms max latency
@@ -1968,26 +948,26 @@ pub fn embedded_spdm_example() -> Result<(), Box<dyn core::error::Error>> {
         real_time_constraints: true,
     };
     
-    let negotiated = spdm_session.negotiate_algorithm_with_performance(
+    let negotiated = spdm_session_async.negotiate_algorithm_with_performance(
         peer_algorithms, 
         real_time_requirements
     )?;
     
-    println!("Negotiated algorithm: {} (static dispatch preferred)", negotiated);
+    println!("Negotiated algorithm: {} (async task crypto, static dispatch preferred)", negotiated);
     
-    // Scenario 2: Process real-time critical message
+    // Scenario 2: Process real-time critical message with async task crypto
     let critical_message = b"Critical security message requiring fast processing";
-    let result = spdm_session.process_message_real_time(critical_message, 800)?; // 800μs deadline
+    let result = spdm_session_async.process_message_real_time(critical_message, 800)?; // 800μs deadline
     
-    println!("Critical message processed: {} bytes output", result.len());
+    println!("Critical message processed with async task crypto: {} bytes output", result.len());
     
-    // Scenario 3: Process normal message with optimization
+    // Scenario 3: Process normal message with device driver crypto
     let normal_message = b"Normal SPDM message for capability exchange";
-    let result = spdm_session.process_message_optimized(normal_message)?;
+    let result = spdm_session_dev.process_message_optimized(normal_message)?;
     
-    println!("Normal message processed: {} bytes output", result.len());
+    println!("Normal message processed with device driver crypto: {} bytes output", result.len());
     
-    // Scenario 4: Handle algorithm change during session
+    // Scenario 3: Handle algorithm change with device driver crypto
     let new_peer_algorithms = &[SPDM_SHA512, SPDM_SHA384]; // Peer now prefers SHA-512
     let flexible_requirements = PerformanceRequirements {
         max_latency_us: 5000,  // 5ms max latency
@@ -2000,18 +980,18 @@ pub fn embedded_spdm_example() -> Result<(), Box<dyn core::error::Error>> {
         real_time_constraints: false,
     };
     
-    let new_algorithm = spdm_session.negotiate_algorithm_with_performance(
+    let new_algorithm = spdm_session_dev.negotiate_algorithm_with_performance(
         new_peer_algorithms, 
         flexible_requirements
     )?;
     
-    println!("Re-negotiated to algorithm: {} (dynamic dispatch acceptable)", new_algorithm);
+    println!("Re-negotiated to algorithm: {} (device driver crypto, dynamic dispatch acceptable)", new_algorithm);
     
-    // Process with new algorithm
-    let final_message = b"Message processed with newly negotiated algorithm";
-    let result = spdm_session.process_message_optimized(final_message)?;
+    // Process with new algorithm using device driver
+    let final_message = b"Message processed with newly negotiated algorithm via device driver";
+    let result = spdm_session_dev.process_message_optimized(final_message)?;
     
-    println!("Final message processed: {} bytes output", result.len());
+    println!("Final message processed with device driver crypto: {} bytes output", result.len());
     
     Ok(())
 }
@@ -2025,15 +1005,90 @@ pub enum SpdmError {
     DeadlineViolation,
     PerformanceRequirementNotMet,
 }
-```
 
-### Key Benefits of This Approach
+/// Platform-specific usage examples
+impl PlatformDigestRegistry<PlatformHandle> {
+    /// Create registry for async task-based crypto operations
+    pub fn new_async_task(task_id: u32) -> Self {
+        Self {
+            crypto_handle: PlatformHandle::TaskId(task_id),
+            supported_algorithms: &[SPDM_SHA256, SPDM_SHA384, SPDM_SHA512],
+        }
+    }
+    
+    /// Create registry using device driver interface (TockOS, etc.)
+    pub fn new_device_driver(device_fd: i32) -> Self {
+        Self {
+            crypto_handle: PlatformHandle::DeviceHandle(device_fd),
+            supported_algorithms: &[SPDM_SHA256, SPDM_SHA384, SPDM_SHA512],
+        }
+    }
+}
 
-1. **Performance Optimization**: Static dispatch for critical paths, dynamic dispatch for flexibility
-2. **Runtime Adaptability**: Can switch between implementations based on performance feedback
-3. **Resource Efficiency**: Uses optimal implementation for current constraints
-4. **Backwards Compatibility**: Supports both static and dynamic trait patterns
-5. **Real-Time Support**: Guarantees timing requirements through static dispatch when needed
-6. **Protocol Compliance**: Maintains full SPDM protocol compatibility while optimizing performance
+/// Example digest operation that works with opaque handles
+pub struct PlatformSha256Op<H: CryptoHandle> {
+    handle: H,
+    state: DigestState,
+}
 
-This hybrid approach demonstrates how embedded systems can benefit from both compile-time optimization and runtime flexibility, adapting to changing performance requirements and protocol negotiations while maintaining strict timing and resource constraints.
+impl<H: CryptoHandle> PlatformSha256Op<H> {
+    pub fn new(handle: H) -> Result<Self, H::Error> {
+        if !handle.is_valid() {
+            return Err(/* handle invalid error */);
+        }
+        
+        Ok(Self {
+            handle,
+            state: DigestState::new(),
+        })
+    }
+}
+
+impl<H: CryptoHandle> DynamicDigestOp for PlatformSha256Op<H> {
+    type Error = PlatformDigestError;
+    type AlgorithmId = u32;
+    
+    fn update(&mut self, input: &[u8]) -> Result<(), Self::Error> {
+        // Implementation depends on handle type
+        match &self.handle {
+            handle if handle.handle_info() == "async_task" => {
+                // Queue operation to async task
+                self.queue_async_operation(input)
+            },
+            handle if handle.handle_info() == "device_driver" => {
+                // Use device driver interface
+                self.invoke_device_driver(input)
+            },
+            _ => {
+                // Generic fallback implementation
+                self.update_generic(input)
+            }
+        }
+    }
+    
+    fn finalize_mut(&mut self) -> Result<(), Self::Error> { todo!() }
+    fn output_size(&self) -> usize { 32 }
+    fn algorithm_id(&self) -> u32 { SPDM_SHA256 }
+    fn copy_output(&self, output: &mut [u8]) -> Result<usize, Self::Error> { todo!() }
+}
+
+#[derive(Debug)]
+pub enum PlatformError {
+    TaskNotFound,
+    DeviceAccessFailed,
+    InvalidOperation,
+    SecurityViolation,
+}
+
+impl core::fmt::Display for PlatformError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            PlatformError::TaskNotFound => write!(f, "Crypto task not found"),
+            PlatformError::DeviceAccessFailed => write!(f, "Device access failed"),
+            PlatformError::InvalidOperation => write!(f, "Invalid crypto operation"),
+            PlatformError::SecurityViolation => write!(f, "Security policy violation"),
+        }
+    }
+}
+
+impl core::error::Error for PlatformError {}
