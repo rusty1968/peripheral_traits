@@ -55,9 +55,10 @@ impl SimulatedPac {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
+/// use simulation::i3c::DummyI3cController;
 /// let mut controller = DummyI3cController::new();
-/// test_i3c_sequence(&mut controller);
+/// simulation::test_i3c_sequence(&mut controller);
 /// ```
 ///
 /// # Real-World Use Case

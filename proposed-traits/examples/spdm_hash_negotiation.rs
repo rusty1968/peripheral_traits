@@ -192,7 +192,7 @@ impl DynamicDigestOp for PlatformSha256Op {
         Ok(())
     }
 
-    fn finalize(self) -> Result<(), SpdmDigestError> {
+    fn finalize(&mut self) -> Result<(), SpdmDigestError> {
         // In real implementation, this would finalize the digest computation
         Ok(())
     }
@@ -260,7 +260,7 @@ impl DynamicDigestOp for PlatformSha384Op {
         Ok(())
     }
 
-    fn finalize(self) -> Result<(), SpdmDigestError> {
+    fn finalize(&mut self) -> Result<(), SpdmDigestError> {
         Ok(())
     }
 
@@ -326,7 +326,7 @@ impl DynamicDigestOp for PlatformSha512Op {
         Ok(())
     }
 
-    fn finalize(self) -> Result<(), SpdmDigestError> {
+    fn finalize(&mut self) -> Result<(), SpdmDigestError> {
         Ok(())
     }
 
