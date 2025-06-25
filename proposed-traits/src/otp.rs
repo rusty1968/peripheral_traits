@@ -64,7 +64,7 @@ pub trait ErrorType {
 ///
 /// All methods return a `Result` to handle potential errors such as invalid
 /// addresses or attempts to write to locked memory.
-pub trait OtpMemory<T>: ErrorType + Send + Sync
+pub trait OtpMemory<T>: ErrorType
 where
     T: Copy + Default,
 {

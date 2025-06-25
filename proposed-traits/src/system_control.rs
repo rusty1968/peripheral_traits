@@ -19,9 +19,6 @@
 //!
 //! ## Composability
 //!
-//! - **Thread Safety**: Trait bounds (`Send + Sync`) ensure that implementations
-//!   can be safely shared across threads, making them suitable for concurrent
-//!   or asynchronous environments.
 //! - **Unified Error Handling**: The `ErrorType` supertrait provides a consistent
 //!   interface for accessing error types, enabling integration with other traits
 //!   and systems.
@@ -97,7 +94,7 @@ pub trait ErrorType {
 
 /// Trait for clock control operations.
 /// Abstracts enabling, disabling, and configuring clocks for peripherals or system components.
-pub trait ClockControl: Send + Sync + ErrorType {
+pub trait ClockControl: ErrorType {
     /// Type for identifying a clock (e.g., peripheral ID, clock name, or register offset).
     type ClockId: Clone + PartialEq;
     /// Type for configuring a clock.
@@ -183,7 +180,7 @@ pub trait ClockControl: Send + Sync + ErrorType {
 
 /// Trait for reset control operations.
 /// Abstracts asserting and deasserting reset signals for peripherals or system components.
-pub trait ResetControl: Send + Sync + ErrorType {
+pub trait ResetControl: ErrorType {
     /// Type for identifying a reset line (e.g., peripheral ID, reset name, or register offset).
     type ResetId: Clone + PartialEq;
 
