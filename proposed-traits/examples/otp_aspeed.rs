@@ -518,6 +518,12 @@ impl proposed_traits::otp::Error for ExampleError {
     }
 }
 
+impl From<ErrorKind> for ExampleError {
+    fn from(_kind: ErrorKind) -> Self {
+        ExampleError
+    }
+}
+
 impl ErrorType for ExampleOtpController {
     type Error = ExampleError;
 }
@@ -906,15 +912,506 @@ mod tests {
     }
 }
 
+/// Application layer abstractions and usage examples for ASPEED OTP
+///
+/// This module demonstrates how the ASPEED OTP traits are typically used
+/// in real-world applications, showing practical patterns and abstractions.
+pub mod application_layer {
+    use super::*;
+
+    /// Device configuration data structure for manufacturing
+    #[derive(Debug, Clone)]
+    pub struct DeviceConfig {
+        pub device_id: u32,
+        pub serial_number: u64,
+        pub mac_address: [u8; 6],
+        pub calibration_data: [u32; 16],
+        pub boot_mode: u8,
+        pub feature_flags: u32,
+    }
+
+    impl DeviceConfig {
+        pub fn to_words(&self) -> Vec<u32> {
+            let mut words = Vec::new();
+            words.push(self.device_id);
+            words.push((self.serial_number >> 32) as u32);
+            words.push(self.serial_number as u32);
+            
+            // Pack MAC address into a word
+            let mac_word = ((self.mac_address[0] as u32) << 24)
+                | ((self.mac_address[1] as u32) << 16)
+                | ((self.mac_address[2] as u32) << 8)
+                | (self.mac_address[3] as u32);
+            words.push(mac_word);
+            
+            let mac_word2 = ((self.mac_address[4] as u32) << 8)
+                | (self.mac_address[5] as u32);
+            words.push(mac_word2);
+            
+            words.extend_from_slice(&self.calibration_data);
+            words.push(((self.boot_mode as u32) << 24) | self.feature_flags);
+            
+            words
+        }
+
+        pub fn data_offset() -> u32 { 0 }
+        pub fn data_size() -> usize { 22 } // words
+    }
+
+    /// Cryptographic keys for secure applications
+    #[derive(Debug, Clone)]
+    pub struct CryptoKeys {
+        pub aes_key: [u32; 8],      // 256-bit AES key
+        pub rsa_public_key: [u32; 64], // 2048-bit RSA public key
+        pub ecdsa_key: [u32; 12],   // P-384 ECDSA key
+        pub hmac_key: [u32; 8],     // HMAC key
+    }
+
+    impl CryptoKeys {
+        pub fn to_words(&self) -> Vec<u32> {
+            let mut words = Vec::new();
+            words.extend_from_slice(&self.aes_key);
+            words.extend_from_slice(&self.rsa_public_key);
+            words.extend_from_slice(&self.ecdsa_key);
+            words.extend_from_slice(&self.hmac_key);
+            words
+        }
+
+        pub fn security_offset() -> u32 { 1024 } // Start at word 1024 in data region
+        pub fn security_size() -> usize { 92 } // words
+    }
+
+    /// Manufacturing data combining all programming requirements
+    #[derive(Debug, Clone)]
+    pub struct ManufacturingData {
+        pub config: DeviceConfig,
+        pub keys: CryptoKeys,
+        pub strap_settings: [bool; 64],
+        pub hardware_config: [u32; 8],
+    }
+
+    /// High-level application service for ASPEED OTP operations
+    pub trait AspeedOtpApplicationService {
+        type Error;
+
+        /// Store device configuration with verification
+        fn store_device_config(&mut self, config: &DeviceConfig) -> Result<(), Self::Error>;
+
+        /// Load device configuration
+        fn load_device_config(&self) -> Result<DeviceConfig, Self::Error>;
+
+        /// Store cryptographic keys securely with protection
+        fn store_crypto_keys(&mut self, keys: &CryptoKeys) -> Result<(), Self::Error>;
+
+        /// Program manufacturing data with high reliability
+        fn program_manufacturing_data(&mut self, data: &ManufacturingData) -> Result<(), Self::Error>;
+
+        /// Configure hardware straps for boot and pin settings
+        fn configure_hardware_straps(&mut self, strap_settings: &[bool; 64]) -> Result<(), Self::Error>;
+
+        /// Lock device for production use (irreversible)
+        fn finalize_device_for_production(&mut self) -> Result<(), Self::Error>;
+
+        /// Validate device programming integrity
+        fn validate_device_integrity(&self) -> Result<ValidationReport, Self::Error>;
+
+        /// Get device status and health information
+        fn get_device_status(&self) -> Result<DeviceStatus, Self::Error>;
+    }
+
+    /// Device validation report
+    #[derive(Debug, Clone)]
+    pub struct ValidationReport {
+        pub config_valid: bool,
+        pub keys_valid: bool,
+        pub straps_valid: bool,
+        pub protection_enabled: bool,
+        pub errors: Vec<String>,
+        pub warnings: Vec<String>,
+    }
+
+    /// Device status information
+    #[derive(Debug, Clone)]
+    pub struct DeviceStatus {
+        pub chip_version: AspeedChipVersion,
+        pub memory_locked: bool,
+        pub regions_protected: u8, // Bitmask of protected regions
+        pub key_count: u32,
+        pub programming_attempts: u32,
+        pub health_score: u8, // 0-100
+    }
+
+    /// Implementation of the application service for any ASPEED OTP controller
+    impl<T> AspeedOtpApplicationService for T
+    where
+        T: AspeedOtpController,
+        T::Error: From<ErrorKind>,
+    {
+        type Error = T::Error;
+
+        fn store_device_config(&mut self, config: &DeviceConfig) -> Result<(), Self::Error> {
+            let _session = self.begin_session()?;
+            
+            // Check if config region is already protected
+            if self.is_region_protected(AspeedOtpRegion::Configuration)? {
+                return Err(ErrorKind::RegionProtected.into());
+            }
+
+            let config_words = config.to_words();
+            self.program_config(0, &config_words)?;
+
+            // Verify the configuration was written correctly
+            let mut read_buffer = vec![0u32; config_words.len()];
+            self.read_config(0, &mut read_buffer)?;
+            
+            if read_buffer != config_words {
+                return Err(ErrorKind::VerificationFailed.into());
+            }
+
+            self.end_session()
+        }
+
+        fn load_device_config(&self) -> Result<DeviceConfig, Self::Error> {
+            let mut buffer = vec![0u32; DeviceConfig::data_size()];
+            self.read_config(0, &mut buffer)?;
+
+            // Parse the configuration from words
+            let device_id = buffer[0];
+            let serial_number = ((buffer[1] as u64) << 32) | (buffer[2] as u64);
+            
+            let mac_word1 = buffer[3];
+            let mac_word2 = buffer[4];
+            let mac_address = [
+                (mac_word1 >> 24) as u8,
+                (mac_word1 >> 16) as u8,
+                (mac_word1 >> 8) as u8,
+                mac_word1 as u8,
+                (mac_word2 >> 8) as u8,
+                mac_word2 as u8,
+            ];
+
+            let mut calibration_data = [0u32; 16];
+            calibration_data.copy_from_slice(&buffer[5..21]);
+
+            let boot_and_features = buffer[21];
+            let boot_mode = (boot_and_features >> 24) as u8;
+            let feature_flags = boot_and_features & 0x00FFFFFF;
+
+            Ok(DeviceConfig {
+                device_id,
+                serial_number,
+                mac_address,
+                calibration_data,
+                boot_mode,
+                feature_flags,
+            })
+        }
+
+        fn store_crypto_keys(&mut self, keys: &CryptoKeys) -> Result<(), Self::Error> {
+            let _session = self.begin_session()?;
+
+            // Store keys in the secure part of the data region
+            let key_words = keys.to_words();
+            self.program_data(CryptoKeys::security_offset(), &key_words)?;
+
+            // Use soak programming for critical security data
+            self.set_soak_mode(true)?;
+            
+            // Verify keys were programmed correctly
+            let mut read_buffer = vec![0u32; key_words.len()];
+            self.read_data(CryptoKeys::security_offset(), &mut read_buffer)?;
+            
+            if read_buffer != key_words {
+                return Err(T::Error::from(ErrorKind::VerificationFailed));
+            }
+
+            // Protect the data region containing keys
+            self.enable_region_protection(AspeedOtpRegion::Data)?;
+
+            self.set_soak_mode(false)?;
+            self.end_session()
+        }
+
+        fn program_manufacturing_data(&mut self, data: &ManufacturingData) -> Result<(), Self::Error> {
+            let _session = self.begin_session()?;
+
+            // Enable soak mode for reliable manufacturing programming
+            self.set_soak_mode(true)?;
+
+            // 1. Program device configuration
+            self.store_device_config(&data.config)?;
+
+            // 2. Program cryptographic keys
+            self.store_crypto_keys(&data.keys)?;
+
+            // 3. Program hardware configuration
+            self.program_config(24, &data.hardware_config)?;
+
+            // 4. Configure hardware straps
+            self.configure_hardware_straps(&data.strap_settings)?;
+
+            self.set_soak_mode(false)?;
+            self.end_session()
+        }
+
+        fn configure_hardware_straps(&mut self, strap_settings: &[bool; 64]) -> Result<(), Self::Error> {
+            // Program each strap bit that needs to be set
+            for (bit_index, &should_set) in strap_settings.iter().enumerate() {
+                if should_set {
+                    // Check if this strap bit has remaining writes
+                    let status = self.get_strap_status(bit_index as u8)?;
+                    if status.remaining_writes == 0 {
+                        return Err(T::Error::from(ErrorKind::WriteExhausted));
+                    }
+
+                    self.program_strap_bit(bit_index as u8, true)?;
+                }
+            }
+
+            Ok(())
+        }
+
+        fn finalize_device_for_production(&mut self) -> Result<(), Self::Error> {
+            let _session = self.begin_session()?;
+
+            // Protect all critical regions
+            self.enable_region_protection(AspeedOtpRegion::Data)?;
+            self.enable_region_protection(AspeedOtpRegion::Configuration)?;
+            self.enable_region_protection(AspeedOtpRegion::Strap)?;
+
+            // Enable global memory lock (irreversible)
+            self.enable_memory_lock()?;
+
+            self.end_session()
+        }
+
+        fn validate_device_integrity(&self) -> Result<ValidationReport, Self::Error> {
+            let mut report = ValidationReport {
+                config_valid: false,
+                keys_valid: false,
+                straps_valid: false,
+                protection_enabled: false,
+                errors: Vec::new(),
+                warnings: Vec::new(),
+            };
+
+            // Validate configuration
+            match self.load_device_config() {
+                Ok(config) => {
+                    report.config_valid = true;
+                    if config.device_id == 0 {
+                        report.warnings.push("Device ID is zero".to_string());
+                    }
+                }
+                Err(_) => {
+                    report.errors.push("Failed to load device configuration".to_string());
+                }
+            }
+
+            // Check protection status
+            match self.get_protection_status() {
+                Ok(protection) => {
+                    report.protection_enabled = protection.data_protected 
+                        && protection.config_protected 
+                        && protection.strap_protected;
+                    
+                    if !protection.memory_locked {
+                        report.warnings.push("Memory not locked for production".to_string());
+                    }
+                }
+                Err(_) => {
+                    report.errors.push("Failed to check protection status".to_string());
+                }
+            }
+
+            // Validate key storage
+            let mut key_buffer = vec![0u32; CryptoKeys::security_size()];
+            match self.read_data(CryptoKeys::security_offset(), &mut key_buffer) {
+                Ok(_) => {
+                    // Simple validation - check if keys are not all zeros
+                    report.keys_valid = key_buffer.iter().any(|&word| word != 0);
+                    if !report.keys_valid {
+                        report.warnings.push("Security keys appear to be empty".to_string());
+                    }
+                }
+                Err(_) => {
+                    report.errors.push("Failed to read security keys".to_string());
+                }
+            }
+
+            // Validate strap settings
+            let mut strap_buffer = [0u32; 2];
+            match self.read_straps(&mut strap_buffer) {
+                Ok(_) => {
+                    report.straps_valid = true;
+                    // Check for common strap configuration issues
+                    if strap_buffer[0] == 0 && strap_buffer[1] == 0 {
+                        report.warnings.push("All strap bits are zero - check configuration".to_string());
+                    }
+                }
+                Err(_) => {
+                    report.errors.push("Failed to read strap settings".to_string());
+                }
+            }
+
+            Ok(report)
+        }
+
+        fn get_device_status(&self) -> Result<DeviceStatus, Self::Error> {
+            let protection_status = self.get_protection_status()?;
+            let key_count = self.get_key_count()?;
+
+            // Calculate protection bitmask
+            let mut regions_protected = 0u8;
+            if protection_status.data_protected { regions_protected |= 0x01; }
+            if protection_status.config_protected { regions_protected |= 0x02; }
+            if protection_status.strap_protected { regions_protected |= 0x04; }
+
+            // Calculate health score based on various factors
+            let mut health_score = 100u8;
+            if !protection_status.memory_locked { health_score -= 20; }
+            if regions_protected != 0x07 { health_score -= 15; }
+            if key_count == 0 { health_score -= 25; }
+
+            Ok(DeviceStatus {
+                chip_version: self.chip_version(),
+                memory_locked: protection_status.memory_locked,
+                regions_protected,
+                key_count,
+                programming_attempts: 0, // Would be tracked by implementation
+                health_score,
+            })
+        }
+    }
+
+    /// Manufacturing workflow example
+    pub fn manufacturing_workflow<T>(
+        controller: &mut T,
+        manufacturing_data: ManufacturingData,
+    ) -> Result<(), <T as ErrorType>::Error> 
+    where
+        T: AspeedOtpController + AspeedOtpApplicationService<Error = <T as ErrorType>::Error>,
+        <T as ErrorType>::Error: From<ErrorKind>,
+    {
+        println!("Starting manufacturing workflow...");
+
+        // Step 1: Validate the controller is ready
+        println!("1. Validating OTP controller...");
+        controller.health_check()?;
+
+        // Step 2: Check if device is already programmed
+        println!("2. Checking device programming status...");
+        let status = controller.get_device_status()?;
+        if status.memory_locked {
+            return Err(ErrorKind::MemoryLocked.into());
+        }
+
+        // Step 3: Program manufacturing data
+        println!("3. Programming manufacturing data...");
+        controller.program_manufacturing_data(&manufacturing_data)?;
+
+        // Step 4: Validate programming
+        println!("4. Validating programming integrity...");
+        let validation = controller.validate_device_integrity()?;
+        if !validation.errors.is_empty() {
+            println!("Validation errors: {:?}", validation.errors);
+            return Err(ErrorKind::VerificationFailed.into());
+        }
+
+        // Step 5: Finalize for production
+        println!("5. Finalizing device for production...");
+        controller.finalize_device_for_production()?;
+
+        // Step 6: Final verification
+        println!("6. Final verification...");
+        let final_status = controller.get_device_status()?;
+        if !final_status.memory_locked {
+            return Err(ErrorKind::LockFailed.into());
+        }
+
+        println!("Manufacturing workflow completed successfully!");
+        println!("Device health score: {}/100", final_status.health_score);
+
+        Ok(())
+    }
+
+    /// Secure application example - key provisioning service
+    pub fn provision_security_keys<T>(
+        controller: &mut T,
+        _device_cert: &[u8],
+        _root_ca: &[u8],
+    ) -> Result<(), <T as ErrorType>::Error> 
+    where
+        T: AspeedOtpController + AspeedOtpApplicationService<Error = <T as ErrorType>::Error>,
+        <T as ErrorType>::Error: From<ErrorKind>,
+    {
+        println!("Starting secure key provisioning...");
+
+        // Generate or derive keys (simplified for example)
+        let crypto_keys = CryptoKeys {
+            aes_key: [0x12345678; 8], // In practice, this would be securely generated
+            rsa_public_key: [0xDEADBEEF; 64],
+            ecdsa_key: [0xCAFEBABE; 12],
+            hmac_key: [0xFEEDFACE; 8],
+        };
+
+        // Store keys with maximum security
+        controller.store_crypto_keys(&crypto_keys)?;
+
+        // Verify key storage
+        let validation = controller.validate_device_integrity()?;
+        if !validation.keys_valid {
+            return Err(ErrorKind::VerificationFailed.into());
+        }
+
+        println!("Security keys provisioned successfully");
+        Ok(())
+    }
+
+    /// Device configuration service for field deployment
+    pub fn configure_field_device<T>(
+        controller: &mut T,
+        network_config: &DeviceConfig,
+    ) -> Result<(), <T as ErrorType>::Error> 
+    where
+        T: AspeedOtpController + AspeedOtpApplicationService<Error = <T as ErrorType>::Error>,
+        <T as ErrorType>::Error: From<ErrorKind>,
+    {
+        // Check if device is already locked
+        let status = controller.get_device_status()?;
+        if status.memory_locked {
+            println!("Device is production-locked, configuration cannot be changed");
+            return Err(ErrorKind::MemoryLocked.into());
+        }
+
+        // Store field configuration
+        controller.store_device_config(network_config)?;
+
+        // Validate configuration
+        let loaded_config = controller.load_device_config()?;
+        if loaded_config.device_id != network_config.device_id {
+            return Err(ErrorKind::VerificationFailed.into());
+        }
+
+        println!("Field device configured successfully");
+        println!("Device ID: 0x{:08X}", loaded_config.device_id);
+        println!("Serial Number: {}", loaded_config.serial_number);
+
+        Ok(())
+    }
+}
+
 /// Example demonstrating ASPEED OTP controller usage
 fn main() {
+    use application_layer::AspeedOtpApplicationService;
+    
     println!("ASPEED OTP Controller Example");
     println!("============================");
     
     // Create an example ASPEED OTP controller
     let mut controller = ExampleOtpController;
     
-    // Demonstrate session management
+    // Basic trait demonstrations
     println!("1. Establishing OTP session...");
     match controller.begin_session() {
         Ok(session_info) => {
@@ -983,9 +1480,132 @@ fn main() {
         Ok(_) => println!("   ✓ Health check passed"),
         Err(_) => println!("   ✗ Health check failed"),
     }
-    
+
+    // Application Layer Demonstrations
+    println!("\n");
+    println!("APPLICATION LAYER DEMONSTRATIONS");
+    println!("===============================");
+
+    // Demonstrate device configuration
+    println!("\n7. Device Configuration Example...");
+    let device_config = application_layer::DeviceConfig {
+        device_id: 0x12345678,
+        serial_number: 0x1234567890ABCDEF,
+        mac_address: [0x02, 0x42, 0xAC, 0x11, 0x00, 0x01],
+        calibration_data: [0x1000; 16],
+        boot_mode: 0x01,
+        feature_flags: 0x00FF00FF,
+    };
+
+    match controller.store_device_config(&device_config) {
+        Ok(_) => {
+            println!("   ✓ Device configuration stored successfully");
+            match controller.load_device_config() {
+                Ok(loaded_config) => {
+                    println!("   ✓ Configuration verified:");
+                    println!("     Device ID: 0x{:08X}", loaded_config.device_id);
+                    println!("     Serial: 0x{:016X}", loaded_config.serial_number);
+                    println!("     MAC: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", 
+                             loaded_config.mac_address[0], loaded_config.mac_address[1],
+                             loaded_config.mac_address[2], loaded_config.mac_address[3],
+                             loaded_config.mac_address[4], loaded_config.mac_address[5]);
+                }
+                Err(_) => println!("   ✗ Failed to verify configuration"),
+            }
+        }
+        Err(_) => println!("   ✗ Failed to store device configuration"),
+    }
+
+    // Demonstrate crypto key storage
+    println!("\n8. Cryptographic Key Storage Example...");
+    let crypto_keys = application_layer::CryptoKeys {
+        aes_key: [0xDEADBEEF; 8],
+        rsa_public_key: [0xCAFEBABE; 64],
+        ecdsa_key: [0xFEEDFACE; 12],
+        hmac_key: [0x12345678; 8],
+    };
+
+    match controller.store_crypto_keys(&crypto_keys) {
+        Ok(_) => println!("   ✓ Cryptographic keys stored and protected"),
+        Err(_) => println!("   ✗ Failed to store cryptographic keys"),
+    }
+
+    // Demonstrate device status reporting
+    println!("\n9. Device Status and Health Reporting...");
+    match controller.get_device_status() {
+        Ok(status) => {
+            println!("   ✓ Device status:");
+            println!("     Chip version: {:?}", status.chip_version);
+            println!("     Memory locked: {}", status.memory_locked);
+            println!("     Protected regions: 0b{:03b}", status.regions_protected);
+            println!("     Key count: {}", status.key_count);
+            println!("     Health score: {}/100", status.health_score);
+        }
+        Err(_) => println!("   ✗ Failed to get device status"),
+    }
+
+    // Demonstrate integrity validation
+    println!("\n10. Device Integrity Validation...");
+    match controller.validate_device_integrity() {
+        Ok(report) => {
+            println!("   ✓ Validation report:");
+            println!("     Config valid: {}", report.config_valid);
+            println!("     Keys valid: {}", report.keys_valid);
+            println!("     Straps valid: {}", report.straps_valid);
+            println!("     Protection enabled: {}", report.protection_enabled);
+            if !report.errors.is_empty() {
+                println!("     Errors: {:?}", report.errors);
+            }
+            if !report.warnings.is_empty() {
+                println!("     Warnings: {:?}", report.warnings);
+            }
+        }
+        Err(_) => println!("   ✗ Failed to validate device integrity"),
+    }
+
+    // Demonstrate manufacturing workflow
+    println!("\n11. Manufacturing Workflow Example...");
+    let manufacturing_data = application_layer::ManufacturingData {
+        config: device_config,
+        keys: crypto_keys,
+        strap_settings: {
+            let mut straps = [false; 64];
+            straps[0] = true;  // Boot from SPI
+            straps[5] = true;  // Enable security features
+            straps[12] = true; // Set clock configuration
+            straps
+        },
+        hardware_config: [0x11111111; 8],
+    };
+
+    println!("   Manufacturing workflow would:");
+    println!("   - Validate controller readiness");
+    println!("   - Program device configuration");
+    println!("   - Store cryptographic keys securely");
+    println!("   - Configure hardware straps");
+    println!("   - Enable protection mechanisms");
+    println!("   - Perform final validation");
+    println!("   - Lock device for production");
+
+    // Demonstrate field configuration
+    println!("\n12. Field Device Configuration Example...");
+    let field_config = application_layer::DeviceConfig {
+        device_id: 0x87654321,
+        serial_number: 0xFEDCBA0987654321,
+        mac_address: [0x02, 0x42, 0xAC, 0x11, 0x00, 0x02],
+        calibration_data: [0x2000; 16],
+        boot_mode: 0x02,
+        feature_flags: 0xFF00FF00,
+    };
+
+    println!("   Field configuration would:");
+    println!("   - Check device lock status");
+    println!("   - Configure network parameters");
+    println!("   - Set operational modes");
+    println!("   - Validate configuration");
+
     // Clean up
-    println!("\n7. Terminating session...");
+    println!("\n13. Terminating session...");
     match controller.end_session() {
         Ok(_) => println!("   ✓ Session terminated successfully"),
         Err(_) => println!("   ✗ Failed to terminate session"),
@@ -993,13 +1613,25 @@ fn main() {
     
     println!("\nExample completed successfully!");
     println!("\nThis example demonstrates:");
+    println!("BASIC TRAITS:");
     println!("- Session-based access control");
     println!("- Multi-region OTP operations (data, config, strap)");
     println!("- Strap bit programming with status tracking");
     println!("- Soak programming for difficult bits");
     println!("- Protection mechanisms and status queries");
     println!("- Health checking and error handling");
+    
+    println!("\nAPPLICATION LAYER:");
+    println!("- Device configuration management");
+    println!("- Secure cryptographic key storage");
+    println!("- Manufacturing workflow automation");
+    println!("- Field device configuration");
+    println!("- Integrity validation and reporting");
+    println!("- Status monitoring and health scoring");
+    
     println!("\nThe ASPEED OTP traits extend the generic OTP traits");
     println!("to provide vendor-specific functionality while maintaining");
     println!("compatibility with generic OTP application code.");
+    println!("\nApplication layer abstractions demonstrate how to build");
+    println!("higher-level services on top of the composable trait system.");
 }

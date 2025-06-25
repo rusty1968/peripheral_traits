@@ -9,3 +9,7 @@ rand_core = "0.6"
 async-trait = "0.1.51"
 embedded-hal = "1"
 embedded-io = "0.6.1"
+
+[[example]]
+name = "otp_aspeed"
+path = "examples/otp_aspeed.rs"
