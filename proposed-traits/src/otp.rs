@@ -1,5 +1,4 @@
 /// Represents the category of an error that occurred during OTP memory operations.
-/// #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[non_exhaustive]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum ErrorKind {
