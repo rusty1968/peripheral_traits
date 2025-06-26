@@ -296,11 +296,17 @@ name = "proposed-traits"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "ecdsa",
+ "elliptic-curve",
  "embedded-hal",
  "embedded-io",
  "embedded-storage",
+ "p256",
+ "rand",
  "rand_core",
  "sha2",
+ "signature",
+ "zeroize",
 ]
 
 [[package]]

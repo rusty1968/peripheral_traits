@@ -138,3 +138,8 @@ pub trait WearLevelDevice: ErrorType {
     /// A result indicating success or failure.
     fn wear_level(&mut self, range: BlockRange<Self::Address>) -> Result<(), Self::Error>;
 }
+
+// Implement BlockAddress for common address types
+impl BlockAddress for u32 {}
+impl BlockAddress for u64 {}
+impl BlockAddress for usize {}

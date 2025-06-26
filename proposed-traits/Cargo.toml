@@ -10,6 +10,13 @@ async-trait = "0.1.51"
 embedded-hal = "1"
 embedded-io = "0.6.1"
 sha2 = "0.10"
+# ECDSA dependencies for reference implementation
+p256 = "0.13"
+ecdsa = "0.16"
+elliptic-curve = "0.13"
+signature = "2.1"
+rand = "0.8"
+zeroize = "1.6"
 
 [[example]]
 name = "otp_aspeed"
@@ -22,6 +29,14 @@ path = "examples/spdm_hash_negotiation.rs"
 [[example]]
 name = "software_digest_impl"
 path = "examples/software_digest_impl.rs"
+
+[[example]]
+name = "software_digest_complete"
+path = "examples/software_digest_complete.rs"
+
+[[example]]
+name = "software_ecdsa_impl"
+path = "examples/software_ecdsa_impl.rs"
 
 [[example]]
 name = "spi_nor_adapter"
