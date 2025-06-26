@@ -536,6 +536,38 @@ impl DigestComputer {
         Ok(output)
     }
 
+    /// Compute digest using static buffer management (no heap allocation)
+    /// 
+    /// This method provides the best of both worlds for embedded systems:
+    /// - Runtime algorithm selection (like dynamic API)
+    /// - Zero heap allocation (like static API)
+    /// 
+    /// It allocates a worst-case buffer (64 bytes for SHA-512) on the stack
+    /// and returns both the buffer and the actual used size. This allows
+    /// embedded systems to support multiple hash algorithms at runtime
+    /// without any heap allocation.
+    /// 
+    /// # Returns
+    /// - `[u8; 64]`: Fixed-size buffer (worst-case for SHA-512)
+    /// - `usize`: Actual number of bytes used (32 for SHA-256, 48 for SHA-384, 64 for SHA-512)
+    /// 
+    /// # Example
+    /// ```rust
+    /// let (buffer, size) = computer.compute_digest_static_buffer(algorithms::SHA256, data)?;
+    /// let hash = &buffer[..size]; // Only use the actual hash bytes (32 for SHA-256)
+    /// ```
+    pub fn compute_digest_static_buffer(&mut self, algorithm_id: u32, data: &[u8]) -> Result<([u8; 64], usize), SoftwareDigestError> {
+        let mut digest_op = self.registry.create_digest(algorithm_id)?;
+        digest_op.update(data)?;
+        digest_op.finalize()?;
+
+        // Static buffer for worst-case (SHA-512 = 64 bytes)
+        let mut output = [0u8; 64];
+        let actual_size = digest_op.copy_output(&mut output)?;
+        
+        Ok((output, actual_size))
+    }
+
     /// Compute digest with multiple updates (streaming, dynamic API)
     pub fn compute_digest_streaming<I>(&mut self, algorithm_id: u32, data_chunks: I) -> Result<Vec<u8>, SoftwareDigestError>
     where
@@ -555,6 +587,27 @@ impl DigestComputer {
         let actual_size = digest_op.copy_output(&mut output)?;
         output.truncate(actual_size);
         Ok(output)
+    }
+
+    /// Compute digest with multiple updates using static buffer (streaming, no heap allocation)
+    pub fn compute_digest_streaming_static_buffer<I>(&mut self, algorithm_id: u32, data_chunks: I) -> Result<([u8; 64], usize), SoftwareDigestError>
+    where
+        I: IntoIterator,
+        I::Item: AsRef<[u8]>,
+    {
+        let mut digest_op = self.registry.create_digest(algorithm_id)?;
+        
+        for chunk in data_chunks {
+            digest_op.update(chunk.as_ref())?;
+        }
+        
+        digest_op.finalize()?;
+
+        // Static buffer for worst-case (SHA-512 = 64 bytes)
+        let mut output = [0u8; 64];
+        let actual_size = digest_op.copy_output(&mut output)?;
+        
+        Ok((output, actual_size))
     }
 
     /// Compute SHA-256 using static API
@@ -754,6 +807,58 @@ mod tests {
     }
 
     #[test]
+    fn test_static_buffer_management() {
+        let mut computer = DigestComputer::new();
+        let test_data = b"static buffer test";
+        
+        // Test SHA-256 with static buffer
+        let (buffer, size) = computer.compute_digest_static_buffer(algorithms::SHA256, test_data).unwrap();
+        assert_eq!(size, 32); // SHA-256 output size
+        let sha256_result = &buffer[..size];
+        
+        // Compare with dynamic allocation version
+        let dynamic_result = computer.compute_digest(algorithms::SHA256, test_data).unwrap();
+        assert_eq!(sha256_result, &dynamic_result[..]);
+        
+        // Test SHA-384 with static buffer
+        let (buffer, size) = computer.compute_digest_static_buffer(algorithms::SHA384, test_data).unwrap();
+        assert_eq!(size, 48); // SHA-384 output size
+        let sha384_result = &buffer[..size];
+        
+        // Test SHA-512 with static buffer
+        let (buffer, size) = computer.compute_digest_static_buffer(algorithms::SHA512, test_data).unwrap();
+        assert_eq!(size, 64); // SHA-512 output size
+        let sha512_result = &buffer[..size];
+        
+        // Verify all results are different (as expected)
+        assert_ne!(sha256_result, &sha384_result[..32]);
+        assert_ne!(sha256_result, &sha512_result[..32]);
+        assert_ne!(&sha384_result[..], &sha512_result[..48]);
+    }
+
+    #[test]
+    fn test_streaming_static_buffer() {
+        let mut computer = DigestComputer::new();
+        let chunks: Vec<&[u8]> = vec![b"static", b" ", b"buffer", b" ", b"streaming"];
+        
+        // Test streaming with static buffer
+        let (buffer, size) = computer
+            .compute_digest_streaming_static_buffer(algorithms::SHA256, chunks.clone())
+            .unwrap();
+        
+        assert_eq!(size, 32);
+        let streaming_result = &buffer[..size];
+        
+        // Compare with regular streaming
+        let dynamic_streaming = computer.compute_digest_streaming(algorithms::SHA256, chunks).unwrap();
+        assert_eq!(streaming_result, &dynamic_streaming[..]);
+        
+        // Compare with direct computation
+        let direct_result = computer.compute_digest(algorithms::SHA256, b"static buffer streaming").unwrap();
+        assert_eq!(streaming_result, &direct_result[..]);
+    }
+
+    #[test]
     fn test_error_conditions() {
         let mut registry = SoftwareDigestRegistry::new();
         
@@ -902,6 +1007,30 @@ fn main() -> Result<(), SoftwareDigestError> {
     println!("  Streaming result: {}", hex_encode(&streaming_result));
     println!("  Direct result:    {}", hex_encode(&direct_result));
     println!("  Results match: {}", streaming_result == direct_result);
+    
+    // Demonstrate static buffer management (zero heap allocation!)
+    println!("\nStatic buffer digest (zero heap allocation):");
+    for &algorithm_id in [algorithms::SHA256, algorithms::SHA384, algorithms::SHA512].iter() {
+        let (buffer, size) = computer.compute_digest_static_buffer(algorithm_id, test_data)?;
+        let (_, _, name) = computer.get_algorithm_info(algorithm_id).unwrap();
+        
+        // Only use the actual output bytes
+        let result = &buffer[..size];
+        println!("  {} (static buffer): {} ({} bytes)", name, hex_encode(result), size);
+    }
+    
+    // Demonstrate streaming with static buffer
+    println!("\nStreaming with static buffer (zero heap allocation):");
+    let chunks: &[&[u8]] = &[b"Static ", b"buffer ", b"streaming ", b"test"];
+    let (buffer, size) = computer.compute_digest_streaming_static_buffer(algorithms::SHA256, chunks)?;
+    let static_streaming_result = &buffer[..size];
+    
+    // Compare with dynamic streaming
+    let dynamic_streaming = computer.compute_digest_streaming(algorithms::SHA256, chunks)?;
+    
+    println!("  Static buffer result:  {}", hex_encode(static_streaming_result));
+    println!("  Dynamic buffer result: {}", hex_encode(&dynamic_streaming));
+    println!("  Results match: {}", static_streaming_result == &dynamic_streaming[..]);
     
     // Demonstrate direct API usage
     println!("\nDirect API usage:");
