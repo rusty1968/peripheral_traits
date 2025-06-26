@@ -91,52 +91,78 @@ impl<const N: usize> From<[u8; N]> for DigestOutput<N> {
 
 impl DigestAlgorithm for Sha256Algorithm {
     const OUTPUT_BITS: usize = 256;
-    type DigestOutput = Vec<u8>;
+    type DigestOutput = [u8; 32]; // 256 bits = 32 bytes
 }
 
 impl DigestAlgorithm for Sha384Algorithm {
     const OUTPUT_BITS: usize = 384;
-    type DigestOutput = Vec<u8>;
+    type DigestOutput = [u8; 48]; // 384 bits = 48 bytes
 }
 
 impl DigestAlgorithm for Sha512Algorithm {
     const OUTPUT_BITS: usize = 512;
-    type DigestOutput = Vec<u8>;
+    type DigestOutput = [u8; 64]; // 512 bits = 64 bytes
 }
 
-/// Static digest operation context
-pub struct StaticDigestOp<D>
-where
-    D: Digest,
-{
-    hasher: D,
+/// SHA-256 specific static digest operation
+pub struct Sha256StaticOp {
+    hasher: Sha256,
     finalized: bool,
 }
 
-impl<D> StaticDigestOp<D>
-where
-    D: Digest,
-{
-    fn new(hasher: D) -> Self {
+/// SHA-384 specific static digest operation
+pub struct Sha384StaticOp {
+    hasher: Sha384,
+    finalized: bool,
+}
+
+/// SHA-512 specific static digest operation
+pub struct Sha512StaticOp {
+    hasher: Sha512,
+    finalized: bool,
+}
+
+impl Sha256StaticOp {
+    fn new() -> Self {
         Self {
-            hasher,
+            hasher: Sha256::new(),
             finalized: false,
         }
     }
 }
 
-impl<D> ErrorType for StaticDigestOp<D>
-where
-    D: Digest,
-{
+impl Sha384StaticOp {
+    fn new() -> Self {
+        Self {
+            hasher: Sha384::new(),
+            finalized: false,
+        }
+    }
+}
+
+impl Sha512StaticOp {
+    fn new() -> Self {
+        Self {
+            hasher: Sha512::new(),
+            finalized: false,
+        }
+    }
+}
+
+impl ErrorType for Sha256StaticOp {
     type Error = SoftwareDigestError;
 }
 
-impl<D> DigestOp for StaticDigestOp<D>
-where
-    D: Digest,
-{
-    type Output = Vec<u8>;
+impl ErrorType for Sha384StaticOp {
+    type Error = SoftwareDigestError;
+}
+
+impl ErrorType for Sha512StaticOp {
+    type Error = SoftwareDigestError;
+}
+
+impl DigestOp for Sha256StaticOp {
+    type Output = [u8; 32];
 
     fn update(&mut self, input: &[u8]) -> Result<(), Self::Error> {
         if self.finalized {
@@ -155,17 +181,86 @@ where
         self.finalized = true;
         let result = self.hasher.finalize();
         
-        // Convert to Vec<u8> to avoid const generic issues
-        Ok(result.to_vec())
+        // Convert to fixed-size array
+        let mut output = [0u8; 32];
+        output.copy_from_slice(&result);
+        Ok(output)
     }
 }
 
-impl<D> DigestCtrlReset for StaticDigestOp<D>
-where
-    D: Digest + Default,
-{
+impl DigestOp for Sha384StaticOp {
+    type Output = [u8; 48];
+
+    fn update(&mut self, input: &[u8]) -> Result<(), Self::Error> {
+        if self.finalized {
+            return Err(SoftwareDigestError::InvalidState);
+        }
+        
+        self.hasher.update(input);
+        Ok(())
+    }
+
+    fn finalize(mut self) -> Result<Self::Output, Self::Error> {
+        if self.finalized {
+            return Err(SoftwareDigestError::InvalidState);
+        }
+        
+        self.finalized = true;
+        let result = self.hasher.finalize();
+        
+        // Convert to fixed-size array
+        let mut output = [0u8; 48];
+        output.copy_from_slice(&result);
+        Ok(output)
+    }
+}
+
+impl DigestOp for Sha512StaticOp {
+    type Output = [u8; 64];
+
+    fn update(&mut self, input: &[u8]) -> Result<(), Self::Error> {
+        if self.finalized {
+            return Err(SoftwareDigestError::InvalidState);
+        }
+        
+        self.hasher.update(input);
+        Ok(())
+    }
+
+    fn finalize(mut self) -> Result<Self::Output, Self::Error> {
+        if self.finalized {
+            return Err(SoftwareDigestError::InvalidState);
+        }
+        
+        self.finalized = true;
+        let result = self.hasher.finalize();
+        
+        // Convert to fixed-size array
+        let mut output = [0u8; 64];
+        output.copy_from_slice(&result);
+        Ok(output)
+    }
+}
+
+impl DigestCtrlReset for Sha256StaticOp {
     fn reset(&mut self) -> Result<(), Self::Error> {
-        self.hasher = D::default();
+        self.hasher = Sha256::new();
+        self.finalized = false;
+        Ok(())
+    }
+}
+
+impl DigestCtrlReset for Sha384StaticOp {
+    fn reset(&mut self) -> Result<(), Self::Error> {
+        self.hasher = Sha384::new();
+        self.finalized = false;
+        Ok(())
+    }
+}
+
+impl DigestCtrlReset for Sha512StaticOp {
+    fn reset(&mut self) -> Result<(), Self::Error> {
+        self.hasher = Sha512::new();
         self.finalized = false;
         Ok(())
     }
@@ -193,26 +288,26 @@ impl ErrorType for SoftwareDigestProvider {
 // Implement DigestInit for each algorithm
 
 impl DigestInit<Sha256Algorithm> for SoftwareDigestProvider {
-    type OpContext<'a> = StaticDigestOp<Sha256> where Self: 'a;
+    type OpContext<'a> = Sha256StaticOp where Self: 'a;
 
     fn init<'a>(&'a mut self, _algo: Sha256Algorithm) -> Result<Self::OpContext<'a>, Self::Error> {
-        Ok(StaticDigestOp::new(Sha256::new()))
+        Ok(Sha256StaticOp::new())
     }
 }
 
 impl DigestInit<Sha384Algorithm> for SoftwareDigestProvider {
-    type OpContext<'a> = StaticDigestOp<Sha384> where Self: 'a;
+    type OpContext<'a> = Sha384StaticOp where Self: 'a;
 
     fn init<'a>(&'a mut self, _algo: Sha384Algorithm) -> Result<Self::OpContext<'a>, Self::Error> {
-        Ok(StaticDigestOp::new(Sha384::new()))
+        Ok(Sha384StaticOp::new())
     }
 }
 
 impl DigestInit<Sha512Algorithm> for SoftwareDigestProvider {
-    type OpContext<'a> = StaticDigestOp<Sha512> where Self: 'a;
+    type OpContext<'a> = Sha512StaticOp where Self: 'a;
 
     fn init<'a>(&'a mut self, _algo: Sha512Algorithm) -> Result<Self::OpContext<'a>, Self::Error> {
-        Ok(StaticDigestOp::new(Sha512::new()))
+        Ok(Sha512StaticOp::new())
     }
 }
 
@@ -378,18 +473,18 @@ pub mod direct {
     }
 
     /// Create a SHA-256 digest operation (static)
-    pub fn sha256_static() -> StaticDigestOp<Sha256> {
-        StaticDigestOp::new(Sha256::new())
+    pub fn sha256_static() -> Sha256StaticOp {
+        Sha256StaticOp::new()
     }
 
     /// Create a SHA-384 digest operation (static)
-    pub fn sha384_static() -> StaticDigestOp<Sha384> {
-        StaticDigestOp::new(Sha384::new())
+    pub fn sha384_static() -> Sha384StaticOp {
+        Sha384StaticOp::new()
     }
 
     /// Create a SHA-512 digest operation (static)
-    pub fn sha512_static() -> StaticDigestOp<Sha512> {
-        StaticDigestOp::new(Sha512::new())
+    pub fn sha512_static() -> Sha512StaticOp {
+        Sha512StaticOp::new()
     }
 
     /// Convenience function to compute SHA-256 hash in one call
@@ -463,21 +558,21 @@ impl DigestComputer {
     }
 
     /// Compute SHA-256 using static API
-    pub fn compute_sha256_static(&mut self, data: &[u8]) -> Result<Vec<u8>, SoftwareDigestError> {
+    pub fn compute_sha256_static(&mut self, data: &[u8]) -> Result<[u8; 32], SoftwareDigestError> {
         let mut op_context = self.provider.init(Sha256Algorithm)?;
         op_context.update(data)?;
         op_context.finalize()
     }
 
     /// Compute SHA-384 using static API
-    pub fn compute_sha384_static(&mut self, data: &[u8]) -> Result<Vec<u8>, SoftwareDigestError> {
+    pub fn compute_sha384_static(&mut self, data: &[u8]) -> Result<[u8; 48], SoftwareDigestError> {
         let mut op_context = self.provider.init(Sha384Algorithm)?;
         op_context.update(data)?;
         op_context.finalize()
     }
 
     /// Compute SHA-512 using static API
-    pub fn compute_sha512_static(&mut self, data: &[u8]) -> Result<Vec<u8>, SoftwareDigestError> {
+    pub fn compute_sha512_static(&mut self, data: &[u8]) -> Result<[u8; 64], SoftwareDigestError> {
         let mut op_context = self.provider.init(Sha512Algorithm)?;
         op_context.update(data)?;
         op_context.finalize()
@@ -534,7 +629,7 @@ mod tests {
         
         // Verify against direct computation
         let expected = direct::sha256_hash(test_data);
-        assert_eq!(result, &expected[..]);
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -548,7 +643,7 @@ mod tests {
         
         // Should match direct computation of "second" only
         let expected = direct::sha256_hash(b"second");
-        assert_eq!(result, &expected[..]);
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -641,7 +736,7 @@ mod tests {
         
         // Test static API equivalence
         let sha256_static = computer.compute_sha256_static(test_data).unwrap();
-        assert_eq!(sha256_static, sha256_direct.to_vec());
+        assert_eq!(sha256_static.to_vec(), sha256_direct.to_vec());
     }
 
     #[test]
@@ -847,7 +942,7 @@ fn main() -> Result<(), SoftwareDigestError> {
     println!("\nResult verification:");
     let all_same = direct_sha256.as_slice() == streaming_result &&
                    streaming_result == output &&
-                   output == static_result;
+                   output == static_result.as_slice();
     println!("  All digest methods produce identical results: {}", all_same);
     
     println!("\nSoftware digest implementation completed successfully!");
