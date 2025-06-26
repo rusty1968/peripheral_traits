@@ -453,6 +453,31 @@ impl DigestRegistry for SoftwareDigestRegistry {
     }
 }
 
+impl SoftwareDigestRegistry {
+    /// Create digest using static operations but return as dynamic trait object
+    /// 
+    /// This demonstrates interoperability where statically-dispatched operations
+    /// are used through the dynamic dispatch interface. This allows mixing
+    /// static and dynamic implementations in the same registry.
+    pub fn create_digest_from_static(&mut self, algorithm_id: u32) -> Result<Box<dyn DynamicDigestOp<Error = SoftwareDigestError, AlgorithmId = u32>>, SoftwareDigestError> {
+        match algorithm_id {
+            algorithms::SHA256 => {
+                let static_op = Sha256StaticOp::new();
+                Ok(Box::new(static_op))
+            }
+            algorithms::SHA384 => {
+                let static_op = Sha384StaticOp::new();
+                Ok(Box::new(static_op))
+            }
+            algorithms::SHA512 => {
+                let static_op = Sha512StaticOp::new();
+                Ok(Box::new(static_op))
+            }
+            _ => Err(SoftwareDigestError::UnsupportedAlgorithm),
+        }
+    }
+}
+
 /// Convenience functions for direct use without the registry
 pub mod direct {
     use super::*;
@@ -536,6 +561,38 @@ impl DigestComputer {
         Ok(output)
     }
 
+    /// Compute digest using static dispatch but through dynamic interface
+    /// 
+    /// This demonstrates interoperability where we use statically-dispatched
+    /// digest operations through the dynamic trait interface. This allows
+    /// applications to choose between pure dynamic dispatch (using RustCrypto
+    /// types directly) or static dispatch (using our algorithm-specific types)
+    /// while maintaining the same interface.
+    pub fn compute_digest_interop(&mut self, algorithm_id: u32, data: &[u8]) -> Result<Vec<u8>, SoftwareDigestError> {
+        let mut digest_op = self.registry.create_digest_from_static(algorithm_id)?;
+        digest_op.update(data)?;
+        digest_op.finalize()?;
+
+        let output_size = digest_op.output_size();
+        let mut output = vec![0u8; output_size];
+        let actual_size = digest_op.copy_output(&mut output)?;
+        output.truncate(actual_size);
+        Ok(output)
+    }
+
+    /// Compute digest using static dispatch through dynamic interface with static buffer
+    pub fn compute_digest_interop_static_buffer(&mut self, algorithm_id: u32, data: &[u8]) -> Result<([u8; 64], usize), SoftwareDigestError> {
+        let mut digest_op = self.registry.create_digest_from_static(algorithm_id)?;
+        digest_op.update(data)?;
+        digest_op.finalize()?;
+
+        // Static buffer for worst-case (SHA-512 = 64 bytes)
+        let mut output = [0u8; 64];
+        let actual_size = digest_op.copy_output(&mut output)?;
+        
+        Ok((output, actual_size))
+    }
+
     /// Compute digest using static buffer management (no heap allocation)
     /// 
     /// This method provides the best of both worlds for embedded systems:
@@ -613,21 +670,21 @@ impl DigestComputer {
     /// Compute SHA-256 using static API
     pub fn compute_sha256_static(&mut self, data: &[u8]) -> Result<[u8; 32], SoftwareDigestError> {
         let mut op_context = self.provider.init(Sha256Algorithm)?;
-        op_context.update(data)?;
+        <Sha256StaticOp as DigestOp>::update(&mut op_context, data)?;
         op_context.finalize()
     }
 
     /// Compute SHA-384 using static API
     pub fn compute_sha384_static(&mut self, data: &[u8]) -> Result<[u8; 48], SoftwareDigestError> {
         let mut op_context = self.provider.init(Sha384Algorithm)?;
-        op_context.update(data)?;
+        <Sha384StaticOp as DigestOp>::update(&mut op_context, data)?;
         op_context.finalize()
     }
 
     /// Compute SHA-512 using static API
     pub fn compute_sha512_static(&mut self, data: &[u8]) -> Result<[u8; 64], SoftwareDigestError> {
         let mut op_context = self.provider.init(Sha512Algorithm)?;
-        op_context.update(data)?;
+        <Sha512StaticOp as DigestOp>::update(&mut op_context, data)?;
         op_context.finalize()
     }
 
@@ -675,7 +732,7 @@ mod tests {
         let mut op_context = provider.init(Sha256Algorithm).unwrap();
         
         let test_data = b"hello world";
-        op_context.update(test_data).unwrap();
+        <Sha256StaticOp as DigestOp>::update(&mut op_context, test_data).unwrap();
         let result = op_context.finalize().unwrap();
         
         assert_eq!(result.len(), 32);
@@ -689,9 +746,9 @@ mod tests {
     fn test_static_api_reset() {
         let mut op_context = direct::sha256_static();
         
-        op_context.update(b"first").unwrap();
+        <Sha256StaticOp as DigestOp>::update(&mut op_context, b"first").unwrap();
         op_context.reset().unwrap();
-        op_context.update(b"second").unwrap();
+        <Sha256StaticOp as DigestOp>::update(&mut op_context, b"second").unwrap();
         let result = op_context.finalize().unwrap();
         
         // Should match direct computation of "second" only
@@ -904,7 +961,7 @@ mod tests {
         
         // Test static API double finalize
         let mut static_op = direct::sha256_static();
-        static_op.update(b"test").unwrap();
+        <Sha256StaticOp as DigestOp>::update(&mut static_op, b"test").unwrap();
         let _result = static_op.finalize().unwrap();
         
         // Note: static API consumes self on finalize, so double finalize isn't possible
@@ -947,7 +1004,7 @@ mod tests {
         
         // Test static direct API  
         let mut sha256_static = direct::sha256_static();
-        sha256_static.update(test_data).unwrap();
+        <Sha256StaticOp as DigestOp>::update(&mut sha256_static, test_data).unwrap();
         let static_result = sha256_static.finalize().unwrap();
         
         // Test direct hash function
@@ -956,6 +1013,86 @@ mod tests {
         // All should produce the same result
         assert_eq!(output, direct_hash);
         assert_eq!(static_result, &direct_hash[..]);
+    }
+
+    #[test]
+    fn test_interoperability_static_through_dynamic() {
+        let mut computer = DigestComputer::new();
+        let test_data = b"interoperability test";
+        
+        // Test static dispatch through dynamic interface
+        let interop_result = computer.compute_digest_interop(algorithms::SHA256, test_data).unwrap();
+        
+        // Compare with pure dynamic dispatch
+        let dynamic_result = computer.compute_digest(algorithms::SHA256, test_data).unwrap();
+        
+        // Compare with pure static dispatch
+        let static_result = computer.compute_sha256_static(test_data).unwrap();
+        
+        // All three approaches should produce identical results
+        assert_eq!(interop_result, dynamic_result);
+        assert_eq!(interop_result, static_result.to_vec());
+        assert_eq!(dynamic_result, static_result.to_vec());
+        
+        // Test with static buffer
+        let (buffer, size) = computer.compute_digest_interop_static_buffer(algorithms::SHA256, test_data).unwrap();
+        assert_eq!(size, 32);
+        let interop_static_buffer = &buffer[..size];
+        assert_eq!(interop_static_buffer, &static_result[..]);
+        
+        // Test all algorithms through interop interface
+        for &algorithm_id in [algorithms::SHA256, algorithms::SHA384, algorithms::SHA512].iter() {
+            let interop_result = computer.compute_digest_interop(algorithm_id, test_data).unwrap();
+            let dynamic_result = computer.compute_digest(algorithm_id, test_data).unwrap();
+            assert_eq!(interop_result, dynamic_result);
+            
+            let (buffer, size) = computer.compute_digest_interop_static_buffer(algorithm_id, test_data).unwrap();
+            assert_eq!(&buffer[..size], &dynamic_result[..]);
+        }
+    }
+
+    #[test]
+    fn test_static_ops_as_dynamic_trait_objects() {
+        let mut registry = SoftwareDigestRegistry::new();
+        let test_data = b"static as dynamic test";
+        
+        // Create static operations but use them through dynamic interface
+        let mut sha256_static = registry.create_digest_from_static(algorithms::SHA256).unwrap();
+        let mut sha384_static = registry.create_digest_from_static(algorithms::SHA384).unwrap();
+        let mut sha512_static = registry.create_digest_from_static(algorithms::SHA512).unwrap();
+        
+        // Use them through the dynamic interface
+        sha256_static.update(test_data).unwrap();
+        sha256_static.finalize().unwrap();
+        
+        sha384_static.update(test_data).unwrap();
+        sha384_static.finalize().unwrap();
+        
+        sha512_static.update(test_data).unwrap();
+        sha512_static.finalize().unwrap();
+        
+        // Get results
+        let mut sha256_output = vec![0u8; sha256_static.output_size()];
+        let sha256_size = sha256_static.copy_output(&mut sha256_output).unwrap();
+        sha256_output.truncate(sha256_size);
+        
+        let mut sha384_output = vec![0u8; sha384_static.output_size()];
+        let sha384_size = sha384_static.copy_output(&mut sha384_output).unwrap();
+        sha384_output.truncate(sha384_size);
+        
+        let mut sha512_output = vec![0u8; sha512_static.output_size()];
+        let sha512_size = sha512_static.copy_output(&mut sha512_output).unwrap();
+        sha512_output.truncate(sha512_size);
+        
+        // Verify they match direct computations
+        assert_eq!(sha256_output, direct::sha256_hash(test_data).to_vec());
+        assert_eq!(sha384_output, direct::sha384_hash(test_data).to_vec());
+        assert_eq!(sha512_output, direct::sha512_hash(test_data).to_vec());
+        
+        // Verify algorithm IDs are correct
+        assert_eq!(registry.create_digest_from_static(algorithms::SHA256).unwrap().algorithm_id(), algorithms::SHA256);
+        assert_eq!(registry.create_digest_from_static(algorithms::SHA384).unwrap().algorithm_id(), algorithms::SHA384);
+        assert_eq!(registry.create_digest_from_static(algorithms::SHA512).unwrap().algorithm_id(), algorithms::SHA512);
     }
 }
 
@@ -1061,7 +1198,7 @@ fn main() -> Result<(), SoftwareDigestError> {
     
     // Process the same data
     for chunk in test_data.chunks(15) {
-        sha256_op.update(chunk)?;
+        <Sha256StaticOp as DigestOp>::update(&mut sha256_op, chunk)?;
     }
     
     let static_result = sha256_op.finalize()?;
@@ -1074,6 +1211,37 @@ fn main() -> Result<(), SoftwareDigestError> {
                    output == static_result.as_slice();
     println!("  All digest methods produce identical results: {}", all_same);
     
+    // Demonstrate interoperability (static dispatch through dynamic interface)
+    println!("\nInteroperability: static dispatch through dynamic interface:");
+    for &algorithm_id in [algorithms::SHA256, algorithms::SHA384, algorithms::SHA512].iter() {
+        let interop_result = computer.compute_digest_interop(algorithm_id, test_data)?;
+        let dynamic_result = computer.compute_digest(algorithm_id, test_data)?;
+        let (_, _, name) = computer.get_algorithm_info(algorithm_id).unwrap();
+        
+        println!("  {} (interop):  {}", name, hex_encode(&interop_result));
+        println!("  {} (dynamic):  {}", name, hex_encode(&dynamic_result));
+        println!("  Results match: {}", interop_result == dynamic_result);
+        println!();
+    }
+    
+    // Demonstrate static operations used as trait objects
+    println!("Static operations as dynamic trait objects:");
+    let mut static_as_dynamic = computer.registry.create_digest_from_static(algorithms::SHA256)?;
+    
+    // Process data through dynamic interface but using static implementation
+    for chunk in test_data.chunks(20) {
+        static_as_dynamic.update(chunk)?;
+    }
+    static_as_dynamic.finalize()?;
+    
+    let mut output = vec![0u8; static_as_dynamic.output_size()];
+    let size = static_as_dynamic.copy_output(&mut output)?;
+    output.truncate(size);
+    
+    println!("  Static SHA-256 through dynamic interface: {}", hex_encode(&output));
+    println!("  Algorithm ID: 0x{:02X}", static_as_dynamic.algorithm_id());
+    println!("  Output size: {} bytes", static_as_dynamic.output_size());
+    
     println!("\nSoftware digest implementation completed successfully!");
     println!("Both static and dynamic trait APIs are fully working!");
     
@@ -1085,4 +1253,150 @@ fn hex_encode(data: &[u8]) -> String {
     data.iter()
         .map(|byte| format!("{:02x}", byte))
         .collect::<String>()
+}
+
+// === Interoperability: Static Operations as Dynamic Operations ===
+// 
+// This section demonstrates how static dispatch implementations can be used
+// through the dynamic dispatch interface, providing true interoperability.
+
+impl DynamicDigestOp for Sha256StaticOp {
+    type Error = SoftwareDigestError;
+    type AlgorithmId = u32;
+
+    fn update(&mut self, input: &[u8]) -> Result<(), Self::Error> {
+        if self.finalized {
+            return Err(SoftwareDigestError::InvalidState);
+        }
+        
+        self.hasher.update(input);
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> Result<(), Self::Error> {
+        if self.finalized {
+            return Err(SoftwareDigestError::InvalidState);
+        }
+        
+        self.finalized = true;
+        Ok(())
+    }
+
+    fn output_size(&self) -> usize {
+        32 // SHA-256 output size
+    }
+
+    fn algorithm_id(&self) -> Self::AlgorithmId {
+        algorithms::SHA256
+    }
+
+    fn copy_output(&self, output: &mut [u8]) -> Result<usize, Self::Error> {
+        if !self.finalized {
+            return Err(SoftwareDigestError::InvalidState);
+        }
+        
+        let output_size = self.output_size();
+        if output.len() < output_size {
+            return Err(SoftwareDigestError::BufferTooSmall);
+        }
+
+        // Clone the hasher to get the result without consuming it
+        let result = self.hasher.clone().finalize();
+        output[..output_size].copy_from_slice(&result);
+        Ok(output_size)
+    }
+}
+
+impl DynamicDigestOp for Sha384StaticOp {
+    type Error = SoftwareDigestError;
+    type AlgorithmId = u32;
+
+    fn update(&mut self, input: &[u8]) -> Result<(), Self::Error> {
+        if self.finalized {
+            return Err(SoftwareDigestError::InvalidState);
+        }
+        
+        self.hasher.update(input);
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> Result<(), Self::Error> {
+        if self.finalized {
+            return Err(SoftwareDigestError::InvalidState);
+        }
+        
+        self.finalized = true;
+        Ok(())
+    }
+
+    fn output_size(&self) -> usize {
+        48 // SHA-384 output size
+    }
+
+    fn algorithm_id(&self) -> Self::AlgorithmId {
+        algorithms::SHA384
+    }
+
+    fn copy_output(&self, output: &mut [u8]) -> Result<usize, Self::Error> {
+        if !self.finalized {
+            return Err(SoftwareDigestError::InvalidState);
+        }
+        
+        let output_size = self.output_size();
+        if output.len() < output_size {
+            return Err(SoftwareDigestError::BufferTooSmall);
+        }
+
+        // Clone the hasher to get the result without consuming it
+        let result = self.hasher.clone().finalize();
+        output[..output_size].copy_from_slice(&result);
+        Ok(output_size)
+    }
+}
+
+impl DynamicDigestOp for Sha512StaticOp {
+    type Error = SoftwareDigestError;
+    type AlgorithmId = u32;
+
+    fn update(&mut self, input: &[u8]) -> Result<(), Self::Error> {
+        if self.finalized {
+            return Err(SoftwareDigestError::InvalidState);
+        }
+        
+        self.hasher.update(input);
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> Result<(), Self::Error> {
+        if self.finalized {
+            return Err(SoftwareDigestError::InvalidState);
+        }
+        
+        self.finalized = true;
+        Ok(())
+    }
+
+    fn output_size(&self) -> usize {
+        64 // SHA-512 output size
+    }
+
+    fn algorithm_id(&self) -> Self::AlgorithmId {
+        algorithms::SHA512
+    }
+
+    fn copy_output(&self, output: &mut [u8]) -> Result<usize, Self::Error> {
+        if !self.finalized {
+            return Err(SoftwareDigestError::InvalidState);
+        }
+        
+        let output_size = self.output_size();
+        if output.len() < output_size {
+            return Err(SoftwareDigestError::BufferTooSmall);
+        }
+
+        // Clone the hasher to get the result without consuming it
+        let result = self.hasher.clone().finalize();
+        output[..output_size].copy_from_slice(&result);
+        Ok(output_size)
+    }
 }
