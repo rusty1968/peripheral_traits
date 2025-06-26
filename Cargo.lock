@@ -300,6 +300,7 @@ dependencies = [
  "embedded-io",
  "embedded-storage",
  "rand_core",
+ "sha2",
 ]
 
 [[package]]

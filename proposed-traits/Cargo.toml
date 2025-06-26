@@ -9,6 +9,7 @@ rand_core = "0.6"
 async-trait = "0.1.51"
 embedded-hal = "1"
 embedded-io = "0.6.1"
+sha2 = "0.10"
 
 [[example]]
 name = "otp_aspeed"
@@ -17,3 +18,11 @@ path = "examples/otp_aspeed.rs"
 [[example]]
 name = "spdm_hash_negotiation"
 path = "examples/spdm_hash_negotiation.rs"
+
+[[example]]
+name = "software_digest_impl"
+path = "examples/software_digest_impl.rs"
+
+[[example]]
+name = "spi_nor_adapter"
+path = "examples/spi_nor_adapter.rs"
